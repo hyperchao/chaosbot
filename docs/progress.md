@@ -22,8 +22,8 @@ must update the table below when it starts, finishes, or changes scope.
 | 01-1e | 阶段规格模板(phase-01-skeleton.md) | ✅ | 06-01 | 06-01 | 0 | 0/0 | 文档/无代码 |
 | 01-2  | Go 模块 + Makefile + main(version) | ✅ | 06-01 | 06-01 | 78 | 0/0 | 5 go.mod + 41 Makefile + 32 main.go |
 | 01-3  | 性能基线脚本(measure.sh) | ✅ | 06-01 | 06-01 | 70 | 0/0 | 见 phase doc 偏差说明 |
-| 02-1  | provider 接口 + 类型 | ⬜ | | | | | |
-| 02-2  | provider 接口契约单测 | ⬜ | | | | | |
+| 02-1  | provider 接口 + 类型定义 | ✅ | 06-01 | 06-01 | 92 | 0/0 | 9 类型 + 4 Role 常量,无外部依赖 |
+| 02-2  | provider 接口契约单测(手写 fake) | ✅ | 06-01 | 06-01 | 112 | 5/5 | 5 表驱动 + fakeProvider 复用 |
 | 02-3  | OpenAI 协议 provider 实现 | ⬜ | | | | | |
 | 02-4  | provider factory | ⬜ | | | | | |
 | 03-1  | agent.Tool 接口 + Registry | ⬜ | | | | | |

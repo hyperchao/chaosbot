@@ -11,7 +11,7 @@
 |---|---|
 | Phase | `01` |
 | Sub-units | `01-1a` … `01-3` |
-| Status | `🟡 in progress` |
+| Status | `✅ complete` (all 7 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | none (first phase) |
 | Estimated total LOC | <200 Go LOC across all sub-units (no Go code in this phase) |
@@ -75,6 +75,15 @@ None in this phase. The first real baseline is captured in Phase 01-3
 > _Filled at the end of the phase. Records deviations, follow-ups, and
 > a commit pointer._
 
+### 阶段收尾
+
+Phase 01 在 01-3 提交后整体完成。**所有 7 个子单元 ✅,无未决 follow-up**。
+
+提交指针:
+- `dcaaafa` 初始文档骨架(Phase 00-0 + 01-1a)
+- `ee633ac` ADR-0001 / SPEC / performance / architecture(01-1b..01-1e)
+- `6919cdc` Go module + Makefile + main + measure.sh(01-2 / 01-3)
+
 ### 01-1a — 仓库门面
 - 生成 LICENSE(MIT)/ README(桩) / `docs/progress.md`(33 行主进度表)。
 - 实际新增 91 行(无 Go 代码)。
@@ -115,5 +124,4 @@ None in this phase. The first real baseline is captured in Phase 01-3
 
 ## Follow-ups
 
-- Phase 01-2 是第一个 Go 代码阶段,需在 spec 里复述"go.mod toolchain 字段"和"Makefile 目标必须可被 `make -n` 干跑"。
-- `make perf` 目标目前是 stub,Phase 01-3 落地测量脚本。
+- _(none outstanding — all sub-units closed 2026-06-01.)_
