@@ -1,8 +1,8 @@
 // Package openai implements provider.Provider against the OpenAI chat
 // completions protocol. The same protocol is spoken by OpenAI,
 // DeepSeek, GLM, vLLM, Ollama, and any vendor that serves
-// /v1/chat/completions. Switch the BaseURL field in Config to point
-// at any of them.
+// /v1/chat/completions. Switch provider.Config.BaseURL to point at
+// any of them.
 package openai
 
 import (
@@ -17,18 +17,6 @@ import (
 
 	"chaosbot/internal/provider"
 )
-
-// Config configures an OpenAI-compatible provider. All fields are
-// read once in New; the resulting Provider is immutable.
-type Config struct {
-	APIKey  string
-	BaseURL string        // empty -> official OpenAI endpoint
-	OrgID   string        // empty -> no org header
-	Timeout time.Duration // zero -> defaultTimeout
-	// Name is the upstream label returned by Provider.Name and
-	// surfaced in logs (e.g. "deepseek", "ollama"). Empty -> "openai".
-	Name string
-}
 
 const (
 	defaultTimeout = 60 * time.Second
@@ -45,7 +33,7 @@ type Provider struct {
 // New returns a provider.Provider backed by the configured endpoint.
 // It satisfies provider.Provider (compile-time asserted in the test
 // file when one is added).
-func New(cfg Config) provider.Provider {
+func New(cfg provider.Config) provider.Provider {
 	sdkCfg := openaipkg.DefaultConfig(cfg.APIKey)
 	sdkCfg.OrgID = cfg.OrgID
 	if cfg.BaseURL != "" {

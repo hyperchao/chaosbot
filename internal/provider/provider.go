@@ -13,6 +13,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
 )
 
 // Role identifies the author of a Message.
@@ -104,6 +105,22 @@ type Response struct {
 	Content   string
 	ToolCalls []ToolCall
 	Usage     Usage
+}
+
+// Config bundles the connection settings for a Provider backend.
+// Every concrete implementation (openai.New, future anthropic.New,
+// etc.) accepts this single Config — there is no per-provider Config
+// type. The factory Build(cfg) dispatches on Name.
+//
+// Fields that some implementations don't use (e.g. OrgID for
+// non-OpenAI vendors) are silently ignored. Timeout=0 means
+// "implementation default".
+type Config struct {
+	Name    string
+	APIKey  string
+	BaseURL string
+	OrgID   string
+	Timeout time.Duration
 }
 
 // Provider is the LLM boundary. Implementations must be safe for

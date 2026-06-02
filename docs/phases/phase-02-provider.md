@@ -1,4 +1,4 @@
-# Phase 02 — Provider abstraction (4 sub-units)
+# Phase 02 — Provider abstraction (5 sub-units)
 
 > The LLM boundary. `internal/agent` may depend on `provider.Provider`
 > only — never on a concrete implementation.
@@ -8,11 +8,11 @@
 | Field | Value |
 |---|---|
 | Phase | `02` |
-| Sub-units | `02-1` … `02-4` |
-| Status | `🟡 in progress` |
+| Sub-units | `02-1` … `02-5` |
+| Status | `✅ complete` (all 5 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 01 (Go module, Makefile, lint) |
-| Estimated total LOC | ≤ 200 Go LOC across all four sub-units |
+| Estimated total LOC | Each sub-unit ≤ 200 Go LOC (SDD gate); see 实现笔记 for actual totals |
 | Performance impact | interface adds zero runtime cost; OpenAI impl measures in Phase 08-2 |
 
 ## Goal
@@ -122,7 +122,7 @@ single `*http.Client` and respect the body caps in
 - `02-1`  Provider 接口 + 类型定义
 - `02-2`  Provider 接口契约单测(手写 fake)
 - `02-3`  OpenAI 协议 provider 实现
-- `02-4`  Provider factory
+- `02-4`  统一 `provider.Config` + `openai.New` 签名重构(2026-06-03)
 - `02-5`  `Request.System` 文档化 + 校验(follow-up,2026-06-03)
 
 ## 实现笔记
@@ -160,6 +160,42 @@ single `*http.Client` and respect the body caps in
   与 Name 解耦(同一 SDK 可服务 OpenAI / DeepSeek / GLM / vLLM / Ollama)。
 - 二进制体积:1.5 MB → **2.2 MB**(增加 0.7 MB,SDK + 间接),远低于 25 MB 预算。
 - `go build` / `gofmt -l` / `go vet` / `make test` 全绿。
+
+### 02-4 — 统一 `provider.Config` + `openai.New` 签名重构
+
+2026-06-03。**起因**:`openai.Config` 重复持有 `provider` 层需要的连接字段;
+后续 anthropic/google 进来时还要再来一份,字段全靠手工映射。讨论后决定把
+Config 提到 `provider` 包,所有 provider 实现统一签名 `New(cfg provider.Config) provider.Provider`。
+
+**实现**:
+- 新增 `provider.Config`(`Name/APIKey/BaseURL/OrgID/Timeout`)。`OrgID` 等
+  部分 vendor 不用的字段由 provider 自己忽略;`Timeout=0` 走各自默认。
+- 删除 `openai.Config`。`openai.New` 签名改为 `func New(cfg provider.Config) provider.Provider`,
+  函数体不变(`defaultTimeout` / `defaultName` 常量保留)。
+- 新建 `openai_test.go`(原 openai 包无单测),2 个 smoke case:Name 透传(保留大小写)、
+  空 Name 回退 "openai"。Wire-format 单测仍按计划留 08-1 补。
+- **没有 factory 函数**。原本想写 `provider.Build` 做 name dispatch,撞 import cycle
+  (`provider ⇄ openai` 互引),放弃。改为:`dispatch 走 DI alias` —— main.go(Phase 07-2)
+  用闭包把 Config 注入 `openai.New`,通过 `di.RegisterAliasDI[provider.Provider]("openai", ...)`
+  注册。`hyperchao/di` 的构造器是 `func() T`(无参),Config 走闭包捕获,既不污染库
+  代码,也满足 AGENTS.md "no package-level di" 规则。
+- `internal/provider/factory.go` 那一轮**没有**提交。
+
+**LOC**:`provider.go` +16 / `openai.go` 净 -10 / `openai_test.go` 新增 ~20 / docs ~30,
+合计 ~55 行(净 +26 Go 代码)。**测试**:2/2 PASS(全 module `go test -race -count=1 ./...` 全绿)。
+
+**Layering 校验**:`grep -l "internal/provider/openai" internal/provider/*.go` —— 除 factory.go(已删)
+外,**`internal/provider/` 不依赖 `provider/openai`**。`architecture.md §1` 的"stdlib only"描述
+对 `internal/provider` 仍然成立(factory 不在本包,自然不需要 openai import)。
+
+**契约**:Phase 07-2 wiring 模板 ——
+
+```go
+// cmd/chaosbot/main.go (Phase 07-2 时落地)
+di.RegisterAliasDI[provider.Provider]("openai", func() provider.Provider {
+    return openai.New(loadProviderConfig())  // loadProviderConfig 从 YAML 读
+})
+```
 
 ### 已知限制(留 follow-up)
 - **未做 round-trip / wire-format 单测**(本单元按计划不分配测试子单元,
