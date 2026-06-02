@@ -110,3 +110,26 @@ func TestFakeProvider_ReturnsProgrammedError(t *testing.T) {
 		t.Errorf("err = %v, want %v", err, wantErr)
 	}
 }
+
+func TestRequest_Validate(t *testing.T) {
+	cases := []struct {
+		name string
+		req  provider.Request
+		want error
+	}{
+		{"both empty", provider.Request{}, nil},
+		{"only system message", provider.Request{Messages: []provider.Message{{Role: provider.RoleSystem, Content: "x"}}}, nil},
+		{"only System field", provider.Request{System: "x"}, nil},
+		{"System and leading user message", provider.Request{System: "x", Messages: []provider.Message{{Role: provider.RoleUser, Content: "y"}}}, nil},
+		{"System and leading system message (conflict)", provider.Request{System: "x", Messages: []provider.Message{{Role: provider.RoleSystem, Content: "y"}}}, provider.ErrSystemConflict},
+		{"System and leading tool message", provider.Request{System: "x", Messages: []provider.Message{{Role: provider.RoleTool, Content: "y"}}}, nil},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := c.req.Validate()
+			if !errors.Is(got, c.want) {
+				t.Errorf("Validate() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

@@ -26,6 +26,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 02-2  | provider 接口契约单测(手写 fake) | ✅ | 06-01 | 06-01 | 112 | 5/5 | 5 表驱动 + fakeProvider 复用 |
 | 02-3  | OpenAI 协议 provider 实现 | ✅ | 06-01 | 06-01 | 188 | 0/0 | 1 直接依赖 go-openai v1.41.2,二进制 2.2MB |
 | 02-4  | provider factory | ⬜ | | | | | |
+| 02-5  | `Request.System` 文档化 + 校验 | ✅ | 06-03 | 06-03 | ~30 | 6/6 | 见 phase-02-provider.md 实现笔记 02-5 |
 | 03-1  | agent.Tool 接口 + Registry | ⬜ | | | | | |
 | 03-2  | Registry → OpenAI tool JSON 转换 | ⬜ | | | | | |
 | 03-3  | Registry + 转换单测 | ⬜ | | | | | |

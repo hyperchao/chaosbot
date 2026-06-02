@@ -123,6 +123,7 @@ single `*http.Client` and respect the body caps in
 - `02-2`  Provider 接口契约单测(手写 fake)
 - `02-3`  OpenAI 协议 provider 实现
 - `02-4`  Provider factory
+- `02-5`  `Request.System` 文档化 + 校验(follow-up,2026-06-03)
 
 ## 实现笔记
 
@@ -165,6 +166,31 @@ single `*http.Client` and respect the body caps in
   留 08-1 统一补)。
 - 错误未做细分(401/429/5xx 都返回同一种 wrapped error);08-1 加。
 - `Name` 字段未做单测(空回退 / 自定义值);08-1 补。
+
+### 02-5 — `Request.System` 文档化 + 校验
+
+Follow-up,2026-06-03。**起因**:`Request.System` 字段与
+`Message{Role:RoleSystem}` 历史上存在两条互不冲突也不互斥的路径,
+无校验、无文档说明,会导致同一次 `Chat` 产生 **两条** `role:"system"`
+的 wire 消息。`Progress 02-3` 完成后回看代码发现。
+
+**实现**:
+- `provider.Request.Validate()`:检查 `System` 与 `Messages[0].Role == RoleSystem`
+  互斥,返回新 sentinel `provider.ErrSystemConflict`。
+- `Request.System` 字段 godoc 补 "mutually exclusive" 说明与设计动机
+  (session-scoped config vs turn-scoped Messages)。
+- `Provider` 接口 godoc 补 "assumes validated input" 契约,**明确校验
+  责任在 agent 层(Phase 04)**,provider 实现侧不重复调用。
+- `openai.Chat` **不**调用 `Validate()`(契约而非实现,避免每个 provider
+  重复;agent loop 是唯一的 caller)。
+- `provider_test.go` 新增 `TestRequest_Validate` 表驱动 6 case。
+- `docs/progress.md` Master Table 新增 02-5 行。
+
+**LOC**:~30 行(代码 + godoc)。**测试**:6/6 PASS。
+
+**契约落地**:`agent.Run`(Phase 04)在 dispatch 之前调 `req.Validate()`,
+失败时返回 `errors.Is(err, provider.ErrSystemConflict)` 给 ui 层做用户
+提示(类似 "config 错误:system prompt 同时出现在两个地方")。
 
 ## Follow-ups
 
