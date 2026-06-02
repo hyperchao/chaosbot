@@ -146,6 +146,26 @@ single `*http.Client` and respect the body caps in
 - 测试覆盖:Role 常量 / 接口实现 / 程序化响应 / 请求捕获 / 错误返回。
 - `go test -race` 全绿(5/5 PASS)。fakeProvider 将被 02-3/04-x 复用。
 
+### 02-3 — OpenAI 协议 provider
+- `internal/provider/openai/openai.go` 195 行,包名 `openai`。
+- 引入 `github.com/sashabaranov/go-openai v1.41.2`(**直接依赖 1,远低于 8 上限**)。
+- 单一 `*http.Client` 复用,`Timeout` 默认 60s(可被 Config 覆盖)。
+- 四个 helper:`toOpenAIRequest` / `toOpenAIMessage` /
+  `fromOpenAIResponse` / `timeoutOrDefault`。每个都是纯函数,
+  单元测试可在 08-1 阶段补(计划里 02-3 不分配测试子单元)。
+- `Config{APIKey, BaseURL, OrgID, Timeout, Name}` 一次性读,`Provider` 不可变。
+- **`Name` 字段**:上游厂商标签(`"deepseek"` / `"ollama"`),用于日志和
+  `chaosbot tools` 列表;空时回退 `"openai"`。**协议名始终是 OpenAI 协议**,
+  与 Name 解耦(同一 SDK 可服务 OpenAI / DeepSeek / GLM / vLLM / Ollama)。
+- 二进制体积:1.5 MB → **2.2 MB**(增加 0.7 MB,SDK + 间接),远低于 25 MB 预算。
+- `go build` / `gofmt -l` / `go vet` / `make test` 全绿。
+
+### 已知限制(留 follow-up)
+- **未做 round-trip / wire-format 单测**(本单元按计划不分配测试子单元,
+  留 08-1 统一补)。
+- 错误未做细分(401/429/5xx 都返回同一种 wrapped error);08-1 加。
+- `Name` 字段未做单测(空回退 / 自定义值);08-1 补。
+
 ## Follow-ups
 
 - Anthropic provider: interface is ready, concrete impl deferred to a
