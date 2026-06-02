@@ -197,6 +197,21 @@ go test -race -count=1 ./...
   04-1; until then, build messages by struct literal and document which
   fields you set.
 
+## Commit policy
+
+- **Never commit without an explicit ask in the same turn.** Phrases like
+  "write code, we'll see", "try this", "先写代码看下有没有 gap" are
+  **not** implicit commit instructions. The flow is strict:
+  spec → ack → implement → surface diff → user says "commit" / "提交" →
+  commit. Do not collapse "implement" and "commit" into one step.
+- If a turn ends with code changes and the user has not typed "commit"
+  (or equivalent: "提交", "ship it", "go ahead and commit"), stop and
+  show the diff. Do not run `git commit` on your own initiative.
+- This applies to **all** turns, including follow-ups after a successful
+  test run, and including the very first commit of a new feature.
+  "Tests pass, looks done" is not the trigger; the user saying "commit"
+  is the only trigger.
+
 ## When in doubt
 
 1. Re-read `docs/SPEC.md`.
