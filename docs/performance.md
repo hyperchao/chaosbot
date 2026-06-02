@@ -88,3 +88,19 @@ measured number in the same commit that changes the binary.
 - `make perf-heap` does the same for heap allocations.
 - `CHAOSBOT_PPROF=:6060` (planned, not in MVP) starts an HTTP pprof
   endpoint when set; default off to keep the binary lean.
+
+## 8. Known measurement gaps and follow-ups
+
+The shell-based `scripts/measure.sh` covers the **macro** budget
+(binary size, cold-start, steady-state, peak per Run), but has inherent
+precision limits for sub-50ms processes. Concrete follow-ups:
+
+| ID | Gap | Owner | Planned in |
+|---|---|---|---|
+| F1 | Cold-start RSS for fast-exit commands (`chaosbot version` < 50ms) is racy: `ps` polling catches the kernel's pre-allocation snapshot (~32-144 KB), not the real Go-runtime peak (~3 MB). | chaosbot | **Phase 08-2** — add a `chaosbot bench` subcommand that wraps the target binary in a Go process, calls `runtime.MemStats.HeapAlloc` / `Sys` at the right moments, and reports true peak. |
+| F2 | Peak per `Agent.Run` requires a **synthetic** agent loop driven by a mock provider. | chaosbot | Phase 04-3 (loop logic) + Phase 08-2 (bench driver). |
+| F3 | Per-tool RSS attribution is invisible — `agent` allocates during tool calls but `ps` only sees the whole process. | chaosbot | Phase 08-2 — bench driver can call individual tools in a loop and bracket each with `runtime.MemStats`. |
+| F4 | Linux-only `getrusage`-style peak RSS via `/usr/bin/time -v` is not used on macOS. | chaosbot | Followed by F1: once the Go bench exists, this gap closes because the bench is cross-platform. |
+
+These are tracked in `docs/progress.md` row **08-2** (the row description
+links back here).

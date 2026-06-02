@@ -20,8 +20,8 @@ must update the table below when it starts, finishes, or changes scope.
 | 01-1c | 性能预算文档(performance.md) | ✅ | 06-01 | 06-01 | 0 | 0/0 | 文档/无代码 |
 | 01-1d | 架构文档(architecture.md) | ✅ | 06-01 | 06-01 | 0 | 0/0 | 文档/无代码 |
 | 01-1e | 阶段规格模板(phase-01-skeleton.md) | ✅ | 06-01 | 06-01 | 0 | 0/0 | 文档/无代码 |
-| 01-2  | Go 模块 + Makefile + main(version) | ⬜ | | | | | |
-| 01-3  | 性能基线脚本 | ⬜ | | | | | |
+| 01-2  | Go 模块 + Makefile + main(version) | ✅ | 06-01 | 06-01 | 78 | 0/0 | 5 go.mod + 41 Makefile + 32 main.go |
+| 01-3  | 性能基线脚本(measure.sh) | ✅ | 06-01 | 06-01 | 70 | 0/0 | 见 phase doc 偏差说明 |
 | 02-1  | provider 接口 + 类型 | ⬜ | | | | | |
 | 02-2  | provider 接口契约单测 | ⬜ | | | | | |
 | 02-3  | OpenAI 协议 provider 实现 | ⬜ | | | | | |
@@ -47,7 +47,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 07-3  | ui/cli 单次输出渲染 | ⬜ | | | | | |
 | 07-4  | ui/repl readline REPL | ⬜ | | | | | |
 | 08-1  | 测试补全(边界 + 错误路径) | ⬜ | | | | | |
-| 08-2  | README/config 完善 + 性能基线回填 | ⬜ | | | | | |
+| 08-2  | README/config 完善 + 性能基线回填 + Go bench 子命令(performance.md F1-F3) | ⬜ | | | | | |
 
 ## 200-LOC 守门(每轮 review 预算)
 

@@ -67,8 +67,8 @@ None in this phase. The first real baseline is captured in Phase 01-3
 - `01-1c` 性能预算文档(docs/performance.md) ✅
 - `01-1d` 架构文档(docs/architecture.md) ✅
 - `01-1e` 阶段规格模板(本文件) ✅
-- `01-2`  Go 模块 + Makefile + main(version) ⬜
-- `01-3`  性能基线脚本 ⬜
+- `01-2`  Go 模块 + Makefile + main(version) ✅
+- `01-3`  性能基线脚本 ✅
 
 ## 实现笔记
 
@@ -94,6 +94,24 @@ None in this phase. The first real baseline is captured in Phase 01-3
 ### 01-1e — 模板(本文件)
 - 统一后续 32 个阶段 doc 的章节顺序。
 - 自指:后续每阶段用此结构 + 在「实现笔记」追加。
+
+### 01-2 — Go 模块 + Makefile + main(version)
+- `go.mod`:`module chaosbot`、`go 1.24`、`toolchain go1.24.2`。
+- `Makefile`:5 个 `make` 目标 + `make help` 自描述,均可在 `make -n` 干跑。
+- `cmd/chaosbot/main.go`:仅支持 `version` 子命令,常量 `version = "dev"`,
+  通过 `ldflags -X main.version=$(VERSION)` 注入 git tag。
+- 自验:`make build` → `make lint` → `make test` 全绿。
+- 偏差:`go fmt -l` 不存在,`fmt` 目标改用 `gofmt -l .`(独立二进制)。
+
+### 01-3 — 性能基线脚本(measure.sh)
+- `scripts/measure.sh` 70 行,macOS/Linux 兼容;build + size + 3 种 RSS 测量,
+  REPL/bench 在对应阶段前自动 skip。
+- 自验:二进制 1.50 MB / cold-start 0.14 MB(REPL/bench skipped)。
+- 偏差(已记入 `docs/performance.md` 后续 todo):
+  - **macOS 上 `/usr/bin/time` 是 BSD 实现,`-v` 非法**,自动降级到 ps 轮询。
+  - **cold-start 对 < 50ms 退出的命令欠准**:`ps` 轮询只能捕到 Go 运行时分配前的初值(约 32-144 KB),
+    实际 peak ~3 MB 在 `version` 退出后才被 `ps` 看到,采样窗口太小。
+  - **真·max RSS 需要 Go-side `runtime.MemStats` 测量程序**,留到 Phase 08-2(`make perf` 配 Go bench 子命令)。详见 `docs/performance.md` §8 follow-ups F1-F4。
 
 ## Follow-ups
 
