@@ -37,16 +37,22 @@ the `## 拆分` section.
 
 ## Repository layout
 
+Target shape (only `cmd/chaosbot/` and `internal/provider/` exist as of
+Phase 02; rest arrive per the `Master Table` in `docs/progress.md`):
+
 ```
 cmd/chaosbot/                 CLI entry (cobra)
 internal/agent/                Agent core: loop, tool, message
 internal/provider/             LLM abstraction; subdirs per provider
+internal/provider/<name>/      Concrete provider impl (e.g. openai/)
 internal/tools/{time,fs,shell,web}/   Built-in tools
 internal/config/               Config loading (YAML + env)
 internal/session/              JSON session persistence
 internal/ui/                   CLI/REPL rendering
-docs/                          Specs, ADRs, progress
-scripts/                       Measurement scripts
+docs/                          Specs (SPEC.md, architecture.md,
+                               performance.md, progress.md), ADRs,
+                               and one phase-NN-*.md per phase
+scripts/                       Measurement scripts (measure.sh)
 ```
 
 ## Dependency injection
@@ -101,8 +107,17 @@ type Toolset struct {
 
 - Standard library `testing` only. No third-party assertion libraries.
 - Table-driven tests preferred.
-- Hand-written fakes implementing the relevant interface live in `*_test.go`
-  files inside the package under test (or in `testdata/` if shared).
+- Use external test package (`package provider_test`, not `package
+  provider`) for black-box tests; that way the fakes double as a
+  contract check on the public surface.
+- Compile-time interface assertion at the top of the fake file, e.g.
+  `var _ provider.Provider = (*fakeProvider)(nil)`.
+- Hand-written fakes implementing the relevant interface live in
+  `*_test.go` files inside the package under test (or in `testdata/` if
+  shared across packages). The `fakeProvider` in
+  `internal/provider/provider_test.go` is the canonical example and is
+  meant to be **reused** by every later package that depends on
+  `provider.Provider` — do not duplicate it.
 - Each new behavior gets at least one positive and one negative test.
 - Coverage targets: ≥ 60% for `internal/agent`, `internal/provider`,
   `internal/session`. No global coverage gate yet.
@@ -120,6 +135,14 @@ All I/O must accept `context.Context` and respect cancellation. Reuse a
 single `*http.Client` with configured timeouts. Tool outputs are
 size-capped (file reads, shell output, web fetch — see performance doc).
 
+### `make perf` caveats
+
+- macOS `/usr/bin/time -v` is BSD and rejects `-v`; `measure.sh` auto-falls
+  back to `ps` polling. Cross-platform results are racy for sub-50ms
+  commands (the real Go-runtime peak is only seen after exit).
+- `chaosbot repl` and `chaosbot bench` are skipped with notes until
+  Phase 07-4 and Phase 08-2 respectively.
+
 ## Adding a dependency (forbidden by default)
 
 1. Document in the relevant phase spec why `stdlib` is insufficient.
@@ -129,15 +152,33 @@ size-capped (file reads, shell output, web fetch — see performance doc).
 ## Build, test, lint
 
 ```
-make build           # go build ./...
-make test            # go test ./...
-make lint            # go vet ./... + gofmt -l
-make run ARGS="..."  # go run ./cmd/chaosbot ...
+make help            # list all targets
+make build           # go build -trimpath -ldflags "-s -w -X main.version=$(VERSION)" -o bin/chaosbot ./...
+make test            # go test -race -count=1 ./...
+make lint            # make fmt + make vet (gofmt -l . ; go vet ./...)
+make run ARGS="..."  # builds, then runs bin/chaosbot <args>  (NOT go run)
 make perf            # scripts/measure.sh
 ```
 
-Targets are defined in `Makefile` (Phase 01-2). If a target is missing,
-add it before using it.
+The binary lands at `bin/chaosbot`. `make test` always runs with `-race
+-count=1`; do not run plain `go test ./...` and think you're covered.
+
+### Run a focused test
+
+```bash
+# single package
+go test -race -count=1 ./internal/provider/...
+
+# single test
+go test -race -count=1 -run TestFakeProvider_ReturnsProgrammedError ./internal/provider/...
+
+# whole module
+go test -race -count=1 ./...
+```
+
+`make build` injects `main.version` from `git describe --tags --dirty
+--always` via `-ldflags -X`. Don't edit the `const version = "dev"` in
+`cmd/chaosbot/main.go`; that's only the fallback when no git tags exist.
 
 ## Common pitfalls
 
@@ -150,6 +191,11 @@ add it before using it.
 - Pulling in a library that drags in CGO → banned, non-portable.
 - Streaming JSON encoders for huge strings — use bounded `io.LimitReader`
   instead of `io.ReadAll`.
+- `provider.Message` is a **tagged union**: one struct carries all four
+  roles, with role-specific fields valid only for that role. Constructor
+  helpers (`NewUserMessage`, `NewToolMessage`, ...) are added in Phase
+  04-1; until then, build messages by struct literal and document which
+  fields you set.
 
 ## When in doubt
 
