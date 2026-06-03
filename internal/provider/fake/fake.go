@@ -15,17 +15,25 @@ import (
 // Compile-time: Provider must satisfy provider.Provider.
 var _ provider.Provider = (*Provider)(nil)
 
-// Provider is a programmable test double. Tests set NextResp /
-// NextErr before calling Chat, then inspect LastReq / Calls
-// afterwards. Intentionally minimal: no response queue, no
-// request recorder beyond the last call. Extend when a real
-// test asks for more, but do not add features speculatively.
+// Call is one scripted response. If Err is non-nil it is
+// returned and Resp is ignored.
+type Call struct {
+	Resp *provider.Response
+	Err  error
+}
+
+// Provider is a programmable test double. Tests program the
+// behavior per call (Script for multi-step loops, NextResp /
+// NextErr for single-shot), then inspect LastReq / AllReqs /
+// Calls afterwards.
 type Provider struct {
 	NameStr  string
 	NextResp *provider.Response
 	NextErr  error
+	Script   []Call
 	Calls    int
 	LastReq  provider.Request
+	AllReqs  []provider.Request
 }
 
 // New returns a Provider with the given name and no programmed
@@ -42,6 +50,15 @@ func (f *Provider) Name() string { return f.NameStr }
 func (f *Provider) Chat(_ context.Context, req provider.Request) (*provider.Response, error) {
 	f.Calls++
 	f.LastReq = req
+	f.AllReqs = append(f.AllReqs, req)
+	if len(f.Script) > 0 {
+		call := f.Script[0]
+		f.Script = f.Script[1:]
+		if call.Err != nil {
+			return nil, call.Err
+		}
+		return call.Resp, nil
+	}
 	if f.NextErr != nil {
 		return nil, f.NextErr
 	}
