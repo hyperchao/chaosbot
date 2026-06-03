@@ -6,6 +6,7 @@ BIN_DIR     ?= bin
 BIN_NAME    ?= chaosbot
 BIN         := $(BIN_DIR)/$(BIN_NAME)
 PKG         := ./...
+BUILD_PKG   := ./cmd/chaosbot  # build only the main package; ./... can't -o to a file path
 VERSION     ?= $(shell git describe --tags --dirty --always 2>/dev/null || echo "dev")
 LDFLAGS     ?= -s -w -X main.version=$(VERSION)
 
@@ -18,7 +19,7 @@ help: ## list targets
 
 build: ## compile binary to bin/chaosbot
 	@mkdir -p $(BIN_DIR)
-	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) $(PKG)
+	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) $(BUILD_PKG)
 
 test: ## run unit tests
 	$(GO) test -race -count=1 $(PKG)
