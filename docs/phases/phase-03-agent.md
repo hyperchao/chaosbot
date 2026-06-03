@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `03` |
 | Sub-units | `03-1` … `03-3` |
-| Status | `⬜ not started` |
+| Status | `✅ complete` (all 3 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 02 (`provider.ToolSpec` exists in `internal/provider/provider.go`) |
 | Estimated total LOC | ~80 Go + ~150 test LOC across 3 sub-units |

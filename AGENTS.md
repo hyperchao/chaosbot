@@ -28,8 +28,15 @@ For every non-trivial change:
 4. **Self-verify** — run `make test` and `make lint`; paste results in chat.
 5. **Update spec** — append an "实现笔记" section to the phase doc with any
    deviations, follow-ups, and a commit pointer.
-6. **Update progress** — flip the matching row in `docs/progress.md` to ✅ and
-   fill the LOC/test columns.
+6. **Update progress** — flip the matching row in `docs/progress.md` to ✅
+   and fill the LOC/test columns.
+7. **Flip phase frontmatter** — update the `Status` field in
+   `docs/phases/phase-NN-*.md` frontmatter using this progression:
+   `⬜ not started` on day 1, `🟡 in progress` once the first sub-unit
+   lands, `✅ complete (all N sub-units done; see 实现笔记)` once the
+   last sub-unit lands. **Do this every time a sub-unit commits, not
+   only at end-of-phase** — the user has been bitten by stale frontmatter
+   more than once.
 
 If a unit would generate more than 200 lines in one turn, split it into
 sub-units and add new rows to the master table in `docs/progress.md` under
