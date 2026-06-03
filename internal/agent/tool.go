@@ -11,6 +11,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"sort"
+
+	"chaosbot/internal/provider"
 )
 
 // Tool is the boundary between the agent loop and one capability
@@ -66,6 +69,30 @@ func NewRegistry() *Registry {
 // REPL "/tools" reload.
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
+}
+
+// Specs returns one provider.ToolSpec per registered tool, in
+// unspecified order (map iteration).
+func (r *Registry) Specs() []provider.ToolSpec {
+	out := make([]provider.ToolSpec, 0, len(r.tools))
+	for _, t := range r.tools {
+		out = append(out, provider.ToolSpec{
+			Name:        t.Name(),
+			Description: t.Description(),
+			Parameters:  t.Parameters(),
+		})
+	}
+	return out
+}
+
+// Names returns the registered tool names, sorted alphabetically.
+func (r *Registry) Names() []string {
+	names := make([]string, 0, len(r.tools))
+	for n := range r.tools {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	return names
 }
 
 // Invoke dispatches a tool call by name. Returns ErrToolNotFound

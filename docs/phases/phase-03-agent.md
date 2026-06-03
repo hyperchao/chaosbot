@@ -186,3 +186,19 @@ No new direct dependencies. Stays within the 8-depend budget
 (文件路径)对多 package 项目非法。修法:Makefile 新增 `BUILD_PKG := ./cmd/chaosbot`,
 build 目标改用 `$(BUILD_PKG)`,test/lint 仍走 `$(PKG) := ./...`。验证
 `make build` 输出 1.5 MB 二进制,`make test` 13/13 PASS,`make lint` clean。
+
+### 03-2 — `Registry.Specs()` + `Registry.Names()`
+
+- 同一文件 `internal/agent/tool.go`,**新增 27 行**(含 godoc)。
+  - `Specs() []provider.ToolSpec`:遍历 `r.tools` map,构造 `[]provider.ToolSpec`。
+    map 迭代顺序,**未指定**;调用方别依赖顺序。`out` 容量预分配 `len(r.tools)`,
+    零分配热路径。
+  - `Names() []string`:遍历 map 收集 name,`sort.Strings` 排序后返回(用于
+    `chaosbot tools` / REPL `/tools` 列表展示)。
+- **首次引入 `internal/provider` import**。Layering 校验:
+  - `grep "internal/provider/openai" internal/agent/*.go` → 空(没有 concrete impl 依赖)
+  - `grep "internal/provider" internal/agent/*.go` → 只有 `tool.go` 里的 `"chaosbot/internal/provider"`,
+    符合 `architecture.md` 第 22 行(只允许 import 接口包,禁 import concrete)。
+- 性能:`Specs()` 一次 Chat round 调一次,O(n) slice 构造,n ≤ 10 时可忽略;
+  `Names()` 调频更低(CLI/REPL 展示),O(n log n) 排序。
+- 自验:`make build` 1.5 MB / `make test` 13/13 PASS / `make lint` clean。
