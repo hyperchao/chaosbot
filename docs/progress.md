@@ -43,7 +43,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 06-1  | session.Store 持久化 | ⬜ | | | | | |
 | 06-2  | session 单测 | ⬜ | | | | | |
 | 06-3  | Agent 接入 session | ⬜ | | | | | |
-| 07-1  | config 加载(YAML + env) | ⬜ | | | | | |
+| 07-1  | config 加载(YAML + env) | ✅ | 06-03 | 06-03 | 140 | 8/8 | yaml.v3 入 go.mod;`CHAOSBOT_*` env 覆盖 YAML;api_key_env 间接解析;无 XDG/cwd 发现 |
 | 07-2  | cobra 子命令 stub | ⬜ | | | | | |
 | 07-3  | ui/cli 单次输出渲染 | ⬜ | | | | | |
 | 07-4  | ui/repl readline REPL | ⬜ | | | | | |

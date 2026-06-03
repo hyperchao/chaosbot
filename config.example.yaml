@@ -1,0 +1,43 @@
+# chaosbot configuration example.
+# Pass with --config <path>. Anything here can be overridden by
+# CHAOSBOT_* environment variables (e.g. CHAOSBOT_API_KEY, CHAOSBOT_MODEL).
+# See docs/SPEC.md §7 for the full precedence list.
+
+provider:
+  # Vendor label. Logged on startup; for OpenAI/DeepSeek/GLM/vLLM/Ollama
+  # all of these speak the same /v1/chat/completions protocol.
+  name: openai
+
+  # Direct key (lowest priority among API-key sources).
+  # api_key: sk-...
+
+  # Indirection: read the key from this env var if api_key is empty.
+  # Defaults to OPENAI_API_KEY if unset.
+  # api_key_env: OPENAI_API_KEY
+
+  # Override for DeepSeek, GLM, Ollama, vLLM, etc.
+  # base_url: https://api.deepseek.com
+
+  # Model name passed on every Chat request. Required for OpenAI-compatible
+  # vendors; the OpenAI API itself doesn't default.
+  # model: gpt-4o-mini
+
+  # Optional. OpenAI org id (ignored by other vendors).
+  # org_id: org-...
+
+  # Per-request HTTP timeout. Default 60s.
+  # timeout: 60s
+
+# System prompt sent as Request.System on every Chat call.
+# Mutually exclusive with a leading system-role message in
+# Messages — see Request.Validate in internal/provider.
+# system: "you are a helpful assistant."
+
+# Agent loop budget. Loop terminates when the model produces a
+# final answer (no tool calls) or after this many iterations.
+# Default 10.
+# max_steps: 10
+
+# Workspace root for file-system tools (Phase 05). Reads and
+# writes are confined to this directory.
+# workspace: /home/me/projects
