@@ -29,7 +29,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 02-5  | `Request.System` 文档化 + 校验 | ✅ | 06-03 | 06-03 | ~30 | 6/6 | 见 phase-02-provider.md 实现笔记 02-5 |
 | 03-1  | agent.Tool 接口 + Registry | ✅ | 06-03 | 06-03 | 63 | 0/0 | 0 外部依赖,03-3 补测;Makefile 修已合本批 |
 | 03-2  | Registry → OpenAI tool JSON 转换 | ✅ | 06-03 | 06-03 | 27 | 0/0 | `Specs()` + `Names()` 落在 `internal/agent/tool.go`,03-3 补测 |
-| 03-3  | Registry + 转换单测 | ⬜ | | | | | |
+| 03-3  | Registry + 转换单测 | ✅ | 06-03 | 06-03 | 187 | 10/10 | 1 编译期断言 + 10 表驱动;fakeTool 复用;外部 test 包 `agent_test` |
 | 04-1  | agent.Message 类型 | ⬜ | | | | | |
 | 04-2  | agent loop 单步逻辑 | ⬜ | | | | | |
 | 04-3  | Agent struct + 终止条件 + 集成测 | ⬜ | | | | | |

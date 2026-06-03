@@ -202,3 +202,30 @@ build 目标改用 `$(BUILD_PKG)`,test/lint 仍走 `$(PKG) := ./...`。验证
 - 性能:`Specs()` 一次 Chat round 调一次,O(n) slice 构造,n ≤ 10 时可忽略;
   `Names()` 调频更低(CLI/REPL 展示),O(n log n) 排序。
 - 自验:`make build` 1.5 MB / `make test` 13/13 PASS / `make lint` clean。
+
+### 03-3 — `agent` 包单测套件
+
+- `internal/agent/tool_test.go` **187 行**,外部 test 包 `agent_test`(同 `provider_test.go` 的模式)。
+- **`fakeTool` 手写测试桩**(25 行):4 方法 + 1 字段(`invokeFunc`)让测试程序化返回 / 错误,
+  另 3 字段(`calls` / `lastCtx` / `lastArgs`)让测试断言调用参数。
+  编译期断言 `var _ agent.Tool = (*fakeTool)(nil)`。
+- **10 个测试**(全 PASS),覆盖:
+  - `TestNewRegistry_Empty` — 空 registry 的 `Names()` / `Specs()` 都是空 slice
+  - `TestRegister_Adds` — Register 单 tool
+  - `TestRegister_Overwrites` — 同名后写覆盖(`Specs()` 也确认 `Description` 跟第二个)
+  - `TestSpecs_MatchesToolFields` — `Name` / `Description` / `Parameters` 三个字段一对一
+  - `TestNames_Sorted` — `Names()` 排序(注册顺序 `zebra / alpha / mango` → 输出 `alpha / mango / zebra`)
+  - `TestInvoke_DispatchesAndReturnsResult` — happy path,计数验证
+  - `TestInvoke_PropagatesToolError` — tool 错误透传(`errors.Is` 验证)
+  - `TestInvoke_NotFound_ReturnsErrToolNotFound` — 未命中时 `errors.Is(err, agent.ErrToolNotFound)` 且 error 字符串含 name
+  - `TestInvoke_RespectsContextCancellation` — `ctx.Done()` 取消时返回 `context.Canceled`(channel 同步,无 sleep 不 flaky)
+  - `TestInvoke_PassesRawArgsUnchanged` — `args` 透传不解析
+- **每个测试独立构造 fakeTool**,无共享 state,无 `t.Parallel()`(MVP 简单优先)。
+- **未用第三方断言库**,全 stdlib `if/else` + `t.Errorf`。
+- 自验:`go test -race -count=1 -v ./internal/agent/...` 10/10 PASS;
+  `make test` 23/23 PASS(10 agent + 11 provider + 2 openai);
+  `make lint` clean。
+
+**Follow-up**:`fakeTool` 当前就地,Phase 04 写 agent loop 集成测时如果还要同款
+fake,提到 `internal/agent/testdata/fake_tool.go`(跨测试文件共享)。
+当前 MVP 只 agent 自身用,先就地。
