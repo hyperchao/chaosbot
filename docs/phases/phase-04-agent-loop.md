@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `04` |
 | Sub-units | `04-1` … `04-3` |
-| Status | `🟡 in progress` (1/3 sub-units done; see 实现笔记) |
+| Status | `🟡 in progress` (2/3 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool/Registry), Phase 02-5 (Request.Validate) |
 | Estimated total LOC | ~370 Go (60 + 160 + 150) |
@@ -213,3 +213,63 @@ Termination conditions (04-3):
 - **零外部依赖**。仅 import `chaosbot/internal/provider`(已知)。
 - 自验:`make build` 1.5 MB / `make test` 23/23 PASS(agent 包 13:10+3,
   2/3 测 + 1/3 sub-cases);`make lint` clean。
+
+### 04-2 — `(a *Agent) step` 方法 + Agent struct 字段
+
+**新增文件**:
+- `internal/agent/agent.go` **68 行**:`Agent` struct(`Provider` / `Registry` /
+  `System` / `Model` / `Temperature` / `MaxTokens`,**无 `MaxSteps`**——04-3 补)
+  + `(a *Agent) step(ctx, history) (newHistory, finalContent, err)` 方法。
+- `internal/agent/agent_test.go` **215 行**:6 个 step 单元测(internal test 包
+  `package agent`,因为 `step` 是 unexported,外部包调不到)。
+
+**附带 refactor(fakeProvider + fakeTool 共享化)**:
+- `internal/provider/fake/fake.go` **49 行**:`Provider` 导出版本(原 `fakeProvider`
+  unexported 留在 `provider_test.go`,无法跨包 import)。AGENTS.md 写明
+  "do not duplicate";之前的 canonical 位置不对,这次提到 subpackage 共享。
+- `internal/provider/provider_test.go` 改用 `fake.Provider`(净 0 LOC,字段从
+  小写 `name`/`nextResp` 改成大写 `NameStr`/`NextResp`)。
+- `internal/agent/fake/fake.go` **~62 行**:`Tool` 导出版本(同 `provider/fake` 模式)。
+  **不**直接 import `chaosbot/internal/agent`,**没有**编译期 `var _ agent.Tool = ...`
+  断言。原因:`agent/agent_test.go` 是 internal test 包(`package agent`),已经 import
+  这个 subpackage,会形成 `agent → agent/fake → agent` cycle(provider 那边
+  `provider_test.go` 是 external test 包,import 图独立算,所以 provider/fake 能正常
+  断言)。契约保证:agent 包测试 `Register(&fake.Tool{...})` 调用点编译器自动强校,
+  fake 签名漂移编译失败。
+- `internal/agent/tool_test.go` 和 `internal/agent/agent_test.go` 都改用 `fake.Tool`,
+  原先两处本地 `fakeTool` 全删,**零重复**。
+
+**step 实现关键点**:
+- `step(ctx, history)` 只接 `history`,**不接 `userMessage`** — 跟 spec 原稿不同。
+  原稿是 `step(ctx, history, userMsg)`,但实现发现:这样 caller 要在每轮手动加
+  user_msg,会重复。改为 Run(04-3)在循环**前**追加一次 user_msg,step 只负责
+  assistant + tools 增量。Spec 偏差记在这里。
+- `req.Validate()` 在 dispatch 之前调(per Phase 02-5 契约),错误 wrap `agent: invalid request: %w`。
+- provider 错误 wrap `agent: chat: %w`(Go error,中断循环)。
+- **tool 错误嵌进 tool message**:`if err != nil { result = err.Error() }`,
+  **不**作为 Go error 冒泡(per `architecture.md` §4,LLM 决定怎么反应)。
+- 一次 Chat 调,1 个 `make([]provider.Message, len(history), len(history)+1+N)` 预分配。
+- step 接收 `history` 是值语义,返回新 slice;用 `append(history, NewAssistantMessage(...))`,
+  不预分配 `make` + `copy`。理由:cap 够时是 O(1) 摊销,不重新分配;cap 不够时 Go runtime
+  增长策略跟手算最优也差不多;caller(Run / 04-3)只重新赋值不 mutate 元素,共享底层数组
+  无害。
+
+**测试覆盖**(6 个,全 PASS):
+- `TestStep_FinalAnswerNoTools` — happy path,`final` 非空,history 增 1 条 assistant
+- `TestStep_ToolCallsAppendToolMessages` — 多 tool call 顺序追加,`ToolCallID` / `Name` 透传
+- `TestStep_ToolErrorEmbeddedInMessage` — tool 返回 error,`Content = err.Error()`,
+  **不**冒泡 Go error(本轮 bug 抓到这个)
+- `TestStep_ProviderErrorBubblesUp` — `errors.Is(err, wantErr)`
+- `TestStep_ValidateFailsBubblesUp` — System + leading system msg → `ErrSystemConflict`
+- `TestStep_PassesSystemAndToolsToProvider` — 验证 `LastReq.System` / `Model` / `Tools` / `Messages`
+
+**已知 duplication**(已修):internal test 里就地写了一份 `fakeTool`(~25 行),因为
+`tool_test.go` 里的 `fakeTool` 在外部包 `agent_test`,内部包看不到。
+**已在 04-2 收尾时抽到 `internal/agent/fake/fake.go`**,跟 provider/fake 同模式,
+`tool_test.go` 和 `agent_test.go` 都改用 `fake.Tool`,零重复。
+
+**Layering**:`agent.go` 仅 import `context` / `fmt` / `provider`。
+`grep "internal/provider/openai" internal/agent/*.go` → 空。符合 `architecture.md` §1。
+
+**自验**:`make test` 18/18 PASS(agent 包新增 6 step,原有 13 tool/registry/message
+未动;provider 6 不变;openai 2 不变);`make build` 1.5 MB;`make lint` clean。
