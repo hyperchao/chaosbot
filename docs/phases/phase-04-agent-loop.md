@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `04` |
 | Sub-units | `04-1` … `04-3` |
-| Status | `🟡 in progress` (2/3 sub-units done; see 实现笔记) |
+| Status | `✅ complete` (all 3 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool/Registry), Phase 02-5 (Request.Validate) |
 | Estimated total LOC | ~370 Go (60 + 160 + 150) |
@@ -273,3 +273,41 @@ Termination conditions (04-3):
 
 **自验**:`make test` 18/18 PASS(agent 包新增 6 step,原有 13 tool/registry/message
 未动;provider 6 不变;openai 2 不变);`make build` 1.5 MB;`make lint` clean。
+
+### 04-3 — `Run` 循环 + `MaxSteps` + `ErrMaxSteps`
+
+**新增**:
+- `Agent` struct 补 `MaxSteps int` 字段(`<= 0` 走 `defaultMaxSteps = 10`)。
+- `ErrMaxSteps` sentinel,`Run` 用 `fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)`
+  包装,`errors.Is` 可识别。
+- `(a *Agent) Run(ctx, userInput string) (string, error)`:循环 `step`,终止条件:
+  ① step 返回 `final != ""`(LLM 给终答案);② `ctx.Err() != nil`(循环顶部检查,
+  **包括 Run 入口前已 cancel 的情况**);③ step 返回 Go error(provider / Validate);
+  ④ MaxSteps 用完 → `ErrMaxSteps`。
+- 内部默认 `defaultMaxSteps = 10` 是 package const,`MaxSteps <= 0` 走它(godoc 注明)。
+
+**附带 provider/fake 扩展**:
+- `internal/provider/fake/fake.go` 加 `Call` 类型(`Resp` + `Err`),
+  `Provider` 加 `Script []Call` 字段(响应队列,每轮 Chat 弹一个)和 `AllReqs []Request`
+  字段(全量请求记录)。`NextResp`/`NextErr` 保留作单次 shot 路径,`Script` 非空时优先用。
+  之前 6 个 provider 测 + 2 个 openai 测继续走 `NextResp` 路径,不受影响。
+
+**新增文件**:
+- `internal/agent/run_test.go` **149 行**,4 个集成测(外部 `package agent_test`,
+  `Run` 公开):
+
+| Test | 验证 |
+|---|---|
+| `TestRun_FinalAnswerFirstStep` | 1 轮 Chat 返终答案;同时验证 `AllReqs[0].System` / `Model` 透传(原 spec 的 `TestRun_PassesSystemPrompt` 合并进来) |
+| `TestRun_TwoStepReActLoop` | LLM 第 1 轮要 tool,echo 工具返 "echoed",LLM 第 2 轮给终答案;验证 2 次 Chat,2nd request messages 长度 3(user + assistant + tool)且 role 顺序对 |
+| `TestRun_MaxStepsReached` | 3 步预算,LLM 永远只返 tool call → `errors.Is(err, agent.ErrMaxSteps)`;Calls=3 |
+| `TestRun_ContextCanceled` | `cancel()` 在 Run 之前,期望 `errors.Is(err, context.Canceled)`,`fp.Calls == 0`(没真发起 Chat) |
+
+**自验**:`make test` 31/31 PASS(agent 包 23:10 tool + 3 message + 6 step + 4 run;
+provider 6 不变;openai 2 不变);`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
+
+**Phase 04 收尾**:所有 3 个 sub-unit ✅。`internal/agent` 包完整:
+- `Tool` interface + `Registry`(03-1/2/3)
+- `NewUserMessage` / `NewAssistantMessage` / `NewToolMessage` 构造器(04-1)
+- `Agent` struct + `step` 方法(04-2)+ `Run` + `MaxSteps` + `ErrMaxSteps`(04-3)
+- 23 个测全过

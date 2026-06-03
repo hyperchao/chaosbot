@@ -32,7 +32,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 03-3  | Registry + 转换单测 | ✅ | 06-03 | 06-03 | 187 | 10/10 | 1 编译期断言 + 10 表驱动;fakeTool 复用;外部 test 包 `agent_test` |
 | 04-1  | agent.Message 类型 | ✅ | 06-03 | 06-03 | 27 | 3/3 | 复用 `provider.Message`,3 构造函数;见 phase-04 实现笔记 |
 | 04-2  | agent loop 单步逻辑 | ✅ | 06-03 | 06-03 | 68 | 6/6 | `step` 改 `step(ctx, history)`,无 userMsg;bug 抓 tool error 必须嵌 message;fake 抽到 `provider/fake/` |
-| 04-3  | Agent struct + 终止条件 + 集成测 | ⬜ | | | | | |
+| 04-3  | Agent struct + 终止条件 + 集成测 | ✅ | 06-03 | 06-03 | ~80 | 4/4 | `Run` + `MaxSteps` + `ErrMaxSteps`;fake 扩 Script/AllReqs 队列;测合并到 4 个 |
 | 05-1  | tools/time.get_time | ⬜ | | | | | |
 | 05-2  | tools/fs.read_file | ⬜ | | | | | |
 | 05-3  | tools/fs.write_file | ⬜ | | | | | |
