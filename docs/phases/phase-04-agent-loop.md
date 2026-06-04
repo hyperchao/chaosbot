@@ -44,7 +44,7 @@ Future separation: if agent-only fields are needed, add a wrapper
 (`agent.HistoryEntry{ Msg provider.Message; At time.Time; ID string }`).
 **Not now**.
 
-## Public API (target shape, filled across 04-1..04-3)
+## Public API (target shape, filled across 04-1..04-3 + refactor)
 
 ```go
 package agent
@@ -56,22 +56,30 @@ func NewUserMessage(content string) provider.Message
 func NewAssistantMessage(content string, toolCalls []provider.ToolCall) provider.Message
 func NewToolMessage(toolCallID, name, content string) provider.Message
 
-// 04-3: Agent
-type Agent struct {
+// 04-3 + post-04 refactor: Agent is an INTERFACE; the concrete
+// type is unexported. CLI / session / tests depend on the
+// interface; only the agent package's own tests touch the
+// concrete type (for the unexported step method).
+type Agent interface {
+    Run(ctx context.Context, userInput string) (string, error)
+}
+
+type Options struct {
     Provider    provider.Provider
     Registry    *Registry
     System      string
     Model       string
     Temperature float64
     MaxTokens   int
-    MaxSteps    int  // 04-3
+    MaxSteps    int
 }
 
-func (a *Agent) Run(ctx context.Context, userInput string) (string, error)
+func New(opts Options) Agent  // returns the interface
 ```
 
-The `step` function (04-2) is **unexported**: `func (a *Agent) step(...)`.
-It's exercised directly by 04-2 tests; 04-3 tests `Run` end-to-end.
+The `step` function (04-2) is **unexported** on the concrete
+type: `func (a *reActAgent) step(...)`. Reachable only from
+tests in `package agent` (internal test).
 
 ## Data flow (one iteration of the loop)
 
@@ -144,6 +152,15 @@ Termination conditions (04-3):
 - `04-3`  `MaxSteps` 字段 + `ErrMaxSteps` sentinel + `(a *Agent) Run`
   方法 + 集成测
   (`internal/agent/agent.go` + `agent_test.go`,~150 Go LOC)
+- `04-refactor`  **`Agent` 从 struct → interface**(post-04 review,2026-06-03):
+  - 新 `Options` struct + `New(opts Options) Agent` 构造器(返回 interface)
+  - 具体实现改名 `reActAgent`(unexported),所有字段 lowercase
+  - `step` / `Run` 方法移到 `*reActAgent`
+  - `agent_test.go`(internal 测)直接构造 `&reActAgent{...}`,**6 个 step 测无改动**
+  - `run_test.go`(external 测)改用 `agent.New(agent.Options{...})` 走公共 API
+  - **不是** spec 规划的独立 sub-unit,是 07-2 review 决定的 refactor
+  (per AGENTS.md "Define interfaces in the consumer package",让 CLI / session /
+  测试拿接口而不是具体类型)
 
 ## Test points
 
@@ -309,5 +326,44 @@ provider 6 不变;openai 2 不变);`make build` 1.5 MB;`make lint` clean;`gofmt 
 **Phase 04 收尾**:所有 3 个 sub-unit ✅。`internal/agent` 包完整:
 - `Tool` interface + `Registry`(03-1/2/3)
 - `NewUserMessage` / `NewAssistantMessage` / `NewToolMessage` 构造器(04-1)
-- `Agent` struct + `step` 方法(04-2)+ `Run` + `MaxSteps` + `ErrMaxSteps`(04-3)
+- `Agent` interface + `step` / `Run` 方法(04-2/3)
 - 23 个测全过
+
+### 04-refactor — `Agent` 改成 interface
+
+Post-04 review 补做(2026-06-03)。**起因**:07-2 启动时 user 指出 `Agent` 是 struct 让 CLI
+没法 mock,违反 AGENTS.md "Define interfaces in the consumer package"。
+虽然只有一个实现,接口能:(a) 让 CLI / session / 测试拿接口做 mock;
+(b) 跟 `hyperchao/di` 配合做 wiring; (c) 强迫 caller 走 `New(opts)` 而不是 struct literal,
+字段封装到位。
+
+**改动**:
+- `type Agent struct { ... }` → `type Agent interface { Run(...) }`
+- 新增 `type Options struct` + `func New(opts Options) Agent`(返回 interface)
+- 具体实现重命名 `reActAgent`(unexported),所有字段 lowercase
+- `step` / `Run` 方法挂到 `*reActAgent` 上
+  - `agent_internal_test.go`(internal 测,`package agent`):`newTestAgent` 返回
+    `*reActAgent`;6 个 step 测**全无改动**(都是构造 concrete + 调 `step`,internal
+    访问不受影响)。**原文件名是 `agent_test.go`,改名 `agent_internal_test.go`**
+    反映"测的是 unexported 实现"(`run_test.go` 同时改名为 `agent_test.go`
+    反映"测的是公共 Agent interface 契约",跟 spec 早先混乱的命名划清)
+  - `agent_test.go`(external 测,`package agent_test`):4 个 test 改用
+    `agent.New(agent.Options{...})` 走公共 API
+
+**契约变化**:
+- 之前:`a := &agent.Agent{Provider: ..., MaxSteps: 5}`(直接构造)
+- 现在:`a := agent.New(agent.Options{...})`(走构造函数)
+- 唯一变化:测试代码从 struct literal 改成 `New(...)` 调用,**行为完全一致**,
+  所有 23 个测全过(0 个测试 fail / 0 个 skip)
+
+**Layering 校验**:
+- `internal/agent/agent.go` 仍只 import `context` / `errors` / `fmt` / `provider`
+- `internal/agent` 不 import `internal/agent/fake`(避免 02-2 / 04-2 讨论过的 cycle)
+- `grep "internal/provider/openai" internal/agent/*.go` → 空
+- 符合 `architecture.md` 第 22 行规则
+
+**自验**:`go test -race -count=1 ./...` 46/46 PASS(23 agent + 8 config + 6 provider
++ 2 openai + 7 cli 已撤回);`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
+
+**未改 progress.md**:04-3 的 sub-unit 范围(Agent + Run + MaxSteps + ErrMaxSteps)仍
+是"完成",这次 refactor 是后置的接口化,不是新 sub-unit。
