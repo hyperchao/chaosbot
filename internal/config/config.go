@@ -16,13 +16,15 @@ import (
 )
 
 // Config is the top-level runtime configuration. The Provider
-// block feeds provider.Config; System / MaxSteps / Workspace
-// feed agent.Agent.
+// block feeds provider.Config; System / MaxSteps / Temperature
+// / MaxTokens / Workspace feed agent.Agent.
 type Config struct {
-	Provider  ProviderConfig `yaml:"provider"`
-	System    string         `yaml:"system"`
-	MaxSteps  int            `yaml:"max_steps"`
-	Workspace string         `yaml:"workspace"`
+	Provider    ProviderConfig `yaml:"provider"`
+	System      string         `yaml:"system"`
+	MaxSteps    int            `yaml:"max_steps"`
+	Temperature float64        `yaml:"temperature"`
+	MaxTokens   int            `yaml:"max_tokens"`
+	Workspace   string         `yaml:"workspace"`
 }
 
 // ProviderConfig is the chaosbot-facing subset of provider
@@ -114,6 +116,9 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 10
+	}
+	if cfg.Temperature == 0 {
+		cfg.Temperature = 0.7
 	}
 }
 

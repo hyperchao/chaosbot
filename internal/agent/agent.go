@@ -15,11 +15,11 @@ type Agent interface {
 	Run(ctx context.Context, userInput string) (string, error)
 }
 
-// Options bundles the wiring for the ReAct agent. Passed to
-// New; New returns the Agent interface.
-type Options struct {
-	Provider    provider.Provider
-	Registry    *Registry
+// Config holds the agent's non-DI runtime config. The chaosbot
+// config package populates this; main.go maps from config.Config
+// to agent.Config. Temperature and MaxTokens default to 0
+// ("use provider default") when not set.
+type Config struct {
 	System      string
 	Model       string
 	Temperature float64
@@ -27,32 +27,28 @@ type Options struct {
 	MaxSteps    int
 }
 
-// New constructs the default ReAct agent. Returns the Agent
-// interface; the concrete type is unexported so callers go
-// through this constructor.
-func New(opts Options) Agent {
-	return &reActAgent{
-		provider:    opts.Provider,
-		registry:    opts.Registry,
-		system:      opts.System,
-		model:       opts.Model,
-		temperature: opts.Temperature,
-		maxTokens:   opts.MaxTokens,
-		maxSteps:    opts.MaxSteps,
-	}
+// reActAgent is the concrete ReAct implementation. The TYPE
+// is unexported (callers go through the Agent interface) but
+// the FIELDS are exported so the di library can fill them via
+// reflection — unexported fields cannot be reflect.Set. The
+// fields' exported-ness is a DI requirement, not a public API:
+// callers should not construct or read reActAgent directly;
+// they use the Agent interface. The package's own tests in
+// package agent have internal access and use struct literals
+// for direct construction; tests in package agent_test build
+// the agent via the di library (per AGENTS.md: "For tests,
+// build a fresh di.New() and register hand-written fakes").
+type reActAgent struct {
+	Provider provider.Provider `di:"type"`
+	Registry *Registry         `di:"type"`
+	Cfg      Config            `di:"type"`
 }
 
-// reActAgent is the concrete ReAct implementation. Unexported
-// so the only way to get one is through New. Methods are
-// accessible to tests in package agent.
-type reActAgent struct {
-	provider    provider.Provider
-	registry    *Registry
-	system      string
-	model       string
-	temperature float64
-	maxTokens   int
-	maxSteps    int
+// New is the no-arg constructor used by the di library. The
+// returned *reActAgent has all fields zero; the library
+// populates them via reflection by walking the di tags.
+func New() Agent {
+	return &reActAgent{}
 }
 
 // ErrMaxSteps is returned by Run when the model never produces
@@ -61,7 +57,7 @@ type reActAgent struct {
 // limit in the formatted error.
 var ErrMaxSteps = errors.New("agent: max steps reached without final answer")
 
-// defaultMaxSteps is the fallback when Options.MaxSteps <= 0.
+// defaultMaxSteps is the fallback when Config.MaxSteps <= 0.
 const defaultMaxSteps = 10
 
 // Run implements Agent. It drives the ReAct loop: seed history
@@ -74,7 +70,7 @@ func (a *reActAgent) Run(ctx context.Context, userInput string) (string, error) 
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	max := a.maxSteps
+	max := a.Cfg.MaxSteps
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
@@ -110,17 +106,17 @@ func (a *reActAgent) Run(ctx context.Context, userInput string) (string, error) 
 // abort the loop; the caller surfaces them to the user.
 func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]provider.Message, string, error) {
 	req := provider.Request{
-		System:      a.system,
+		System:      a.Cfg.System,
 		Messages:    history,
-		Tools:       a.registry.Specs(),
-		Model:       a.model,
-		Temperature: a.temperature,
-		MaxTokens:   a.maxTokens,
+		Tools:       a.Registry.Specs(),
+		Model:       a.Cfg.Model,
+		Temperature: a.Cfg.Temperature,
+		MaxTokens:   a.Cfg.MaxTokens,
 	}
 	if err := req.Validate(); err != nil {
 		return nil, "", fmt.Errorf("agent: invalid request: %w", err)
 	}
-	resp, err := a.provider.Chat(ctx, req)
+	resp, err := a.Provider.Chat(ctx, req)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent: chat: %w", err)
 	}
@@ -132,7 +128,7 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 	}
 
 	for _, call := range resp.ToolCalls {
-		result, err := a.registry.Invoke(ctx, call.Name, call.Arguments)
+		result, err := a.Registry.Invoke(ctx, call.Name, call.Arguments)
 		if err != nil {
 			result = err.Error()
 		}

@@ -14,7 +14,9 @@ import (
 // newTestAgent wires a minimal reActAgent backed by
 // providerfake.Provider and a registry seeded with the given
 // tools (name -> response). Internal-test access means we
-// build the concrete type directly without going through New.
+// build the concrete type directly without going through New
+// (no-arg DI constructor) — the di library can't reach us
+// here, but we don't need it.
 func newTestAgent(t *testing.T, tools map[string]string) (*reActAgent, *providerfake.Provider) {
 	t.Helper()
 	reg := NewRegistry()
@@ -29,10 +31,12 @@ func newTestAgent(t *testing.T, tools map[string]string) (*reActAgent, *provider
 	}
 	fp := &providerfake.Provider{NameStr: "test"}
 	a := &reActAgent{
-		provider: fp,
-		registry: reg,
-		system:   "you are a helper",
-		model:    "test-model",
+		Provider: fp,
+		Registry: reg,
+		Cfg: Config{
+			System: "you are a helper",
+			Model:  "test-model",
+		},
 	}
 	return a, fp
 }
@@ -112,14 +116,14 @@ func TestStep_ToolErrorEmbeddedInMessage(t *testing.T) {
 		},
 	})
 	a := &reActAgent{
-		provider: &providerfake.Provider{
+		Provider: &providerfake.Provider{
 			NameStr: "test",
 			NextResp: &provider.Response{
 				ToolCalls: []provider.ToolCall{{ID: "c", Name: "boom", Arguments: json.RawMessage(`{}`)}},
 			},
 		},
-		registry: reg,
-		model:    "m",
+		Registry: reg,
+		Cfg:      Config{Model: "m"},
 	}
 	history := []provider.Message{NewUserMessage("go")}
 	newHistory, final, err := a.step(context.Background(), history)
@@ -144,9 +148,9 @@ func TestStep_ToolErrorEmbeddedInMessage(t *testing.T) {
 func TestStep_ProviderErrorBubblesUp(t *testing.T) {
 	wantErr := errors.New("provider down")
 	a := &reActAgent{
-		provider: &providerfake.Provider{NameStr: "test", NextErr: wantErr},
-		registry: NewRegistry(),
-		model:    "m",
+		Provider: &providerfake.Provider{NameStr: "test", NextErr: wantErr},
+		Registry: NewRegistry(),
+		Cfg:      Config{Model: "m"},
 	}
 	_, _, err := a.step(context.Background(), []provider.Message{NewUserMessage("x")})
 	if !errors.Is(err, wantErr) {
@@ -156,10 +160,12 @@ func TestStep_ProviderErrorBubblesUp(t *testing.T) {
 
 func TestStep_ValidateFailsBubblesUp(t *testing.T) {
 	a := &reActAgent{
-		provider: &providerfake.Provider{NameStr: "test"},
-		registry: NewRegistry(),
-		system:   "you are a helper",
-		model:    "m",
+		Provider: &providerfake.Provider{NameStr: "test"},
+		Registry: NewRegistry(),
+		Cfg: Config{
+			System: "you are a helper",
+			Model:  "m",
+		},
 	}
 	history := []provider.Message{
 		{Role: provider.RoleSystem, Content: "another system msg"},

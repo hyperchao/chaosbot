@@ -39,6 +39,9 @@ func TestLoad_FromEnv_APIKey(t *testing.T) {
 	if cfg.MaxSteps != 10 {
 		t.Errorf("MaxSteps = %d, want 10", cfg.MaxSteps)
 	}
+	if cfg.Temperature != 0.7 {
+		t.Errorf("Temperature = %v, want default 0.7", cfg.Temperature)
+	}
 }
 
 func TestLoad_FromYAML(t *testing.T) {

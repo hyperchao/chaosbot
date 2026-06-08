@@ -6,11 +6,31 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/hyperchao/di"
+
 	"chaosbot/internal/agent"
 	"chaosbot/internal/agent/fake"
 	"chaosbot/internal/provider"
 	providerfake "chaosbot/internal/provider/fake"
 )
+
+// buildAgent wires a test agent via the di library. Per
+// AGENTS.md: "For tests, build a fresh di.New() and register
+// hand-written fakes." The agent package's no-arg New + the
+// di:"type" tags on reActAgent's fields do the rest.
+//
+// The di library exposes Register/Get as package-level generics
+// (di.RegisterDI[T](d, f), di.GetDI[T](d)); the per-container
+// *DI value is passed explicitly so tests don't share state.
+func buildAgent(t *testing.T, fp provider.Provider, reg *agent.Registry, cfg agent.Config) agent.Agent {
+	t.Helper()
+	c := di.New()
+	di.RegisterDI(c, func() provider.Provider { return fp })
+	di.RegisterDI(c, func() *agent.Registry { return reg })
+	di.RegisterDI(c, func() agent.Config { return cfg })
+	di.RegisterDI(c, agent.New)
+	return di.GetDI[agent.Agent](c)
+}
 
 func TestRun_FinalAnswerFirstStep(t *testing.T) {
 	fp := &providerfake.Provider{
@@ -19,9 +39,7 @@ func TestRun_FinalAnswerFirstStep(t *testing.T) {
 			{Resp: &provider.Response{Content: "the answer"}},
 		},
 	}
-	a := agent.New(agent.Options{
-		Provider: fp,
-		Registry: agent.NewRegistry(),
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{
 		System:   "you are a helper",
 		Model:    "test-model",
 		MaxSteps: 5,
@@ -67,7 +85,7 @@ func TestRun_TwoStepReActLoop(t *testing.T) {
 			return "echoed", nil
 		},
 	})
-	a := agent.New(agent.Options{Provider: fp, Registry: reg, MaxSteps: 5})
+	a := buildAgent(t, fp, reg, agent.Config{MaxSteps: 5})
 
 	got, err := a.Run(context.Background(), "hi")
 	if err != nil {
@@ -114,7 +132,7 @@ func TestRun_MaxStepsReached(t *testing.T) {
 			return "x", nil
 		},
 	})
-	a := agent.New(agent.Options{Provider: fp, Registry: reg, MaxSteps: 3})
+	a := buildAgent(t, fp, reg, agent.Config{MaxSteps: 3})
 
 	_, err := a.Run(context.Background(), "hi")
 	if !errors.Is(err, agent.ErrMaxSteps) {
@@ -132,7 +150,7 @@ func TestRun_ContextCanceled(t *testing.T) {
 			{Resp: &provider.Response{Content: "should not reach"}},
 		},
 	}
-	a := agent.New(agent.Options{Provider: fp, Registry: agent.NewRegistry(), MaxSteps: 5})
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 5})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()

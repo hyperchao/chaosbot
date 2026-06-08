@@ -44,7 +44,7 @@ Future separation: if agent-only fields are needed, add a wrapper
 (`agent.HistoryEntry{ Msg provider.Message; At time.Time; ID string }`).
 **Not now**.
 
-## Public API (target shape, filled across 04-1..04-3 + refactor)
+## Public API (target shape, filled across 04-1..04-3 + 2 refactors)
 
 ```go
 package agent
@@ -56,7 +56,7 @@ func NewUserMessage(content string) provider.Message
 func NewAssistantMessage(content string, toolCalls []provider.ToolCall) provider.Message
 func NewToolMessage(toolCallID, name, content string) provider.Message
 
-// 04-3 + post-04 refactor: Agent is an INTERFACE; the concrete
+// 04-3 + 2 refactors: Agent is an INTERFACE; the concrete
 // type is unexported. CLI / session / tests depend on the
 // interface; only the agent package's own tests touch the
 // concrete type (for the unexported step method).
@@ -64,9 +64,10 @@ type Agent interface {
     Run(ctx context.Context, userInput string) (string, error)
 }
 
-type Options struct {
-    Provider    provider.Provider
-    Registry    *Registry
+// Config is the agent's non-DI runtime config. Populated from
+// chaosbot/internal/config (System / MaxSteps / Temperature /
+// MaxTokens) + the provider's Model.
+type Config struct {
     System      string
     Model       string
     Temperature float64
@@ -74,7 +75,24 @@ type Options struct {
     MaxSteps    int
 }
 
-func New(opts Options) Agent  // returns the interface
+// reActAgent is the concrete ReAct implementation. Fields are
+// EXPORTED so the di library can fill them via reflection
+// (unexported fields can't be reflect.Set). TYPE is still
+// unexported, so external packages only see the Agent
+// interface.
+type reActAgent struct {
+    Provider provider.Provider `di:"type"`
+    Registry *Registry         `di:"type"`
+    Cfg      Config            `di:"type"`
+}
+
+// New is the no-arg constructor used by the di library. Fields
+// are populated via reflection by walking the di tags.
+func New() Agent
+
+// NewFromFields is for tests / manual wiring. Production
+// should go through New + DI.
+func NewFromFields(p provider.Provider, reg *Registry, cfg Config) Agent
 ```
 
 The `step` function (04-2) is **unexported** on the concrete
@@ -342,13 +360,9 @@ Post-04 review 补做(2026-06-03)。**起因**:07-2 启动时 user 指出 `Agent
 - 新增 `type Options struct` + `func New(opts Options) Agent`(返回 interface)
 - 具体实现重命名 `reActAgent`(unexported),所有字段 lowercase
 - `step` / `Run` 方法挂到 `*reActAgent` 上
-  - `agent_internal_test.go`(internal 测,`package agent`):`newTestAgent` 返回
-    `*reActAgent`;6 个 step 测**全无改动**(都是构造 concrete + 调 `step`,internal
-    访问不受影响)。**原文件名是 `agent_test.go`,改名 `agent_internal_test.go`**
-    反映"测的是 unexported 实现"(`run_test.go` 同时改名为 `agent_test.go`
-    反映"测的是公共 Agent interface 契约",跟 spec 早先混乱的命名划清)
-  - `agent_test.go`(external 测,`package agent_test`):4 个 test 改用
-    `agent.New(agent.Options{...})` 走公共 API
+- `agent_internal_test.go`(internal 测):`newTestAgent` 返回 `*reActAgent`;6 个 step 测**全
+  无改动**(都是构造 concrete + 调 `step`,internal 访问不受影响)
+- `agent_test.go`(external 测):4 个 test 改用 `agent.New(agent.Options{...})` 走公共 API
 
 **契约变化**:
 - 之前:`a := &agent.Agent{Provider: ..., MaxSteps: 5}`(直接构造)
@@ -356,14 +370,94 @@ Post-04 review 补做(2026-06-03)。**起因**:07-2 启动时 user 指出 `Agent
 - 唯一变化:测试代码从 struct literal 改成 `New(...)` 调用,**行为完全一致**,
   所有 23 个测全过(0 个测试 fail / 0 个 skip)
 
+### 04-refactor 2 — `Options` 拆 Config + DI 字段 + 无参 New
+
+Post-04-refactor 跟进(2026-06-03),为 07-2 真接 DI 做准备。**起因**:user
+看 `New(opts Options)` 设计,指出 (a) Provider/Registry 本来就能走 DI
+`di:"type"` 注入,塞在 `Options` 里是冗余;(b) 其他字段(System/Model/etc.)本质
+上从 config 来,`Options` 跟 `config.Config` 字段重叠。
+
+**di 库的关键约束**(看 `hyperchao/di/di.go` 源码):
+```go
+func buildStruct(d *DI, v reflect.Value) {
+    for v.Kind() == reflect.Pointer || v.Kind() == reflect.Interface {
+        if v.IsNil() { return }
+        v = v.Elem()
+    }
+    if v.Kind() != reflect.Struct { return }
+    for i := 0; i < t.NumField(); i++ {
+        if !field.IsExported() { continue }  // ← unexported 反射写不进
+        if tag := field.Tag.Get("di"); tag == "" { continue }
+        v.Field(i).Set(build(d, alias{t: field.Type, name: ...}))
+    }
+}
+```
+→ `di.RegisterDI(F)` 的 `F` **必须无参**;字段**必须 exported**(unexported 反射写不进);
+DI 通过反射遍历 `di:"type"` 标签字段自动填值。
+
+**改动**:
+- `Options` 删,改 `Config struct`(5 字段,跟 chaosbot config 子集对齐)
+- `reActAgent` **类型 unexported**,**字段全部 exported** + 加 `di:"type"` 标签:
+  ```go
+  type reActAgent struct {
+      Provider provider.Provider `di:"type"`
+      Registry *Registry         `di:"type"`
+      Cfg      Config            `di:"type"`
+  }
+  ```
+- `New(opts Options) Agent` → `New() Agent` 无参(由 di 库反射调用)
+- **没有** `NewFromFields` —— 外部 test 按 AGENTS.md "For tests, build a fresh
+  `di.New()` and register hand-written fakes" 走 DI 路径:
+  ```go
+  c := di.New()
+  di.RegisterDI(c, func() provider.Provider { return fp })
+  di.RegisterDI(c, func() *agent.Registry { return reg })
+  di.RegisterDI(c, func() agent.Config { return cfg })
+  di.RegisterDI(c, agent.New)
+  return di.GetDI[agent.Agent](c)
+  ```
+  内部 test(`package agent`)可以走 `&reActAgent{...}` 字面量构造(internal 访问)。
+- `chaosbot/internal/config/config.go` 加 `Temperature` + `MaxTokens` 字段,
+  `Temperature == 0` 默认 0.7(让 LLM 不那么随机)
+
+**DI wiring(07-2 真接时)**:
+```go
+di := di.New()
+di.RegisterDI(openai.New)                    // provider.Provider
+di.RegisterDI(agent.NewRegistry)             // *Registry
+di.Register(func() agent.Config { ... })      // 值类型 Config
+di.RegisterDI(agent.New)                     // Agent(reActAgent),字段自动填
+a := di.Get[agent.Agent](di)
+```
+
+**封装性 trade-off**:
+- ❌ `reActAgent` 字段 exported(反射要求,unavoidable)
+- ✅ `reActAgent` **类型**仍然 unexported → 外部包拿不到这个类型,只能拿
+  `Agent` interface → 字段 exported 在外部**不可见**(拿不到类型就读不到字段)。
+  封装层级靠"类型 unexported"维持,不是靠"字段 lowercase"。
+- ✅ 没有 `NewFromFields` 这类"测试专用 constructor"漏到 public API
+
+**测试改动**:
+- `agent_internal_test.go`:6 个 step 测**全无改动**,继续用 `&reActAgent{Provider: ...,
+  Registry: ..., Cfg: Config{...}}` 构造(internal test 有权限访问 unexported 类型)
+- `agent_test.go`:4 个 Run 测改用 DI 路径(`buildAgent` helper + `di.New()`),
+  替代直接 `agent.New(opts)` 跟 `agent.NewFromFields`。这是 AGENTS.md 写明的
+  "For tests, build a fresh di.New() and register hand-written fakes" 范式
+- **新增直接依赖** `github.com/hyperchao/di v0.0.5`(原 0 直接依赖,现 3:
+  go-openai + di + yaml.v3,仍在 8 预算内)
+
 **Layering 校验**:
 - `internal/agent/agent.go` 仍只 import `context` / `errors` / `fmt` / `provider`
-- `internal/agent` 不 import `internal/agent/fake`(避免 02-2 / 04-2 讨论过的 cycle)
-- `grep "internal/provider/openai" internal/agent/*.go` → 空
+- 不 import `internal/provider/openai` / `internal/config`
+- `internal/agent/agent_test.go`(external test)import `hyperchao/di` +
+  `agent` + `agent/fake` + `provider` + `provider/fake`,符合 external test 黑盒测
+  public API 的约定(走 DI 是公共路径)
 - 符合 `architecture.md` 第 22 行规则
 
-**自验**:`go test -race -count=1 ./...` 46/46 PASS(23 agent + 8 config + 6 provider
-+ 2 openai + 7 cli 已撤回);`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
+**自验**:`go test -race -count=1 ./...` 47/47 PASS(23 agent + 9 config
++ 6 provider + 2 openai + 7 cli 已撤回;`Temperature` 默认值 0.7 是新测;
+DI 路径 `buildAgent` helper 在 4 个 Run 测里正常工作);
+`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
 
-**未改 progress.md**:04-3 的 sub-unit 范围(Agent + Run + MaxSteps + ErrMaxSteps)仍
-是"完成",这次 refactor 是后置的接口化,不是新 sub-unit。
+**未改 progress.md**:refactor 跟之前一样,sub-unit 04-3 范围不变,这是后置
+改进不是新 sub-unit。

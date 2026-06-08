@@ -1,3 +1,5 @@
+github.com/hyperchao/di v0.0.5 h1:FT2I+dvrZiF+ueq5/TllBnroIUoRJS5zbZHfETMHW5U=
+github.com/hyperchao/di v0.0.5/go.mod h1:b7fG9cj8lKtq2zsGZU+gTyJ+cd19tjAKipFRXy4P4no=
 github.com/sashabaranov/go-openai v1.41.2 h1:vfPRBZNMpnqu8ELsclWcAvF19lDNgh1t6TVfFFOPiSM=
 github.com/sashabaranov/go-openai v1.41.2/go.mod h1:lj5b/K+zjTSFxVLijLSTDZuP7adOgerWeFyZLUhAKRg=
 gopkg.in/check.v1 v0.0.0-20161208181325-20d25e280405 h1:yhCVgyC4o1eVCa2tZl7eS0r+SDo693bJlVdllGtEeKM=
