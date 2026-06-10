@@ -24,3 +24,7 @@ go.work.sum
 # Local env / secrets
 .env
 .env.local
+
+# Local chaosbot config (use chaosbot.example.yaml as a template)
+chaosbot.yaml
+chaosbot.local.yaml
