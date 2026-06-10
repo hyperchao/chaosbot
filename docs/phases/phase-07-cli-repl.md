@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `07` |
 | Sub-units | `07-1` … `07-4` |
-| Status | `🟡 in progress` (2/4 sub-units done; see 实现笔记) |
+| Status | `🟡 in progress` (3/4 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04 (Agent + Run), Phase 02 (provider.Config) |
 | Estimated total LOC | ~310 Go (80 + 100 + 30 + 100) |
