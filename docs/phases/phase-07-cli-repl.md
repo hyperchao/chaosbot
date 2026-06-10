@@ -90,9 +90,16 @@ func main() {
   - `config.Load` 严格校验,但 `version` / no-args 走 bypass(`needsConfig` 判断),
     不需要 API key 也能跑 — `chaosbot version` 因此可独立 smoke 测
 - `07-3`  `internal/ui/cli` 单次输出渲染(~30 Go LOC)— REPL 也复用
-- `07-4`  `internal/ui/repl` readline 循环(`chaosbot/readline` 库,
-  `bufio.Scanner` 走 stdlib,~100 Go LOC) — slash commands: `/reset` `/exit`
-  (defer `/tools` to Phase 05)
+- `07-4`  REPL loop(in `cmd/chaosbot/cli`, stdlib `bufio.Scanner`,
+  ~100 Go LOC) — slash commands: `/reset` `/exit` `/help`
+  - `agent.Agent` interface 加 `Chat(ctx, msgs) (msg, err)` 方法(暴露
+    history);`Run(prompt)` 改成 `Chat` 的薄包装,保留向后兼容
+  - REPL 持 `[]provider.Message` in-memory,`/reset` 清空,`/exit` 返 nil
+  - `cli.CLI.Run` 无 args 时 dispatch 到 `replCmd(os.Stdin, c.Out,
+    c.ErrOut, c.Agent)`(`os.Stdin` 注入式 via factory,test 时换成
+    `bytes.Buffer`)
+  - **defer** `/tools` to Phase 05(没 tools,空 `/tools` 会困惑)
+  - **defer** session persistence to Phase 06(重启失 history)
 
 ## Test points
 
@@ -104,6 +111,12 @@ func main() {
 | `TestLoad_MissingAPIKey_ReturnsError` | 07-1 | unit |
 | `TestRun_OneShot` (subcommand dispatcher) | 07-2 | unit (fakeProvider, capture args) |
 | `TestRun_DefaultsToREPL` (no args) | 07-2 | unit |
+| `TestChat_MultiTurn_AccumulatesHistory` | 07-4 | unit (fakeProvider, capture msgs) |
+| `TestREPL_TwoTurnLoop` | 07-4 | unit (programmed readline input) |
+| `TestREPL_SlashExit` | 07-4 | unit |
+| `TestREPL_SlashReset` | 07-4 | unit |
+| `TestREPL_SlashHelp` | 07-4 | unit |
+| `TestREPL_EOF_Exits` | 07-4 | unit (empty input) |
 | `TestRender_Bare` | 07-3 | unit (just fmt-equivalent) |
 | `TestREPL_TwoTurnLoop` | 07-4 | unit (programmed readline input) |
 | `TestREPL_SlashExit` | 07-4 | unit |
@@ -274,3 +287,68 @@ model:       (empty)
 **自验**:`make test` 54/54 PASS(23 agent + 9 config + 6 provider + 2 openai
 + 14 cmd/chaosbot/cli);`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
 冒烟 5 条路径全对。
+
+### 07-4 — REPL 循环(`/reset` `/exit` `/help`)
+
+**Goal**:让 `chaosbot`(无 args)进多轮 REPL,history 留 in-memory。
+
+**Public API 增项**:
+- `internal/agent/agent.go`:`Agent` interface 加
+  ```go
+  Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error)
+  ```
+  `Run(prompt string)` 改写成 `Chat` 的薄包装
+  (`Run(p) == Chat(ctx, []Message{NewUserMessage(p)})` 取 assistant text),
+  保留 4 个 spec 04 Run test 的语义。
+- `cmd/chaosbot/cli/cli.go`:加
+  ```go
+  func (c *CLI) replCmd(in io.Reader) error   // stdin / buffer
+  ```
+  持 `history []provider.Message`,循环 `bufio.Scanner`:
+  - `/reset` → 清空 history,print `history cleared`
+  - `/exit` → 返 nil
+  - `/help` → print slash commands 列表
+  - `<empty>`(EOF)→ 返 nil
+  - 其他 → `c.Agent.Chat(ctx, append(history, NewUserMessage(line)))`,
+    append 返回的 assistant 到 history,print `assistant.Content`
+
+- `cmd/chaosbot/wire.go`:注册 `*cli.CLI.In` 字段
+  (tag `di:"alias:in"`,factory `func() io.Reader { return os.Stdin }`)。
+  `os.Stdin` 在 REPL 启动时不能 close,是单例。
+
+**Test points**(已在 § Test points 表里):
+- `TestChat_MultiTurn_AccumulatesHistory` — agent 层,fake provider 收到
+  的 `req.Messages` 包含 turn 1 + turn 2 全部 4 条 user/assistant
+- `TestREPL_TwoTurnLoop` — cli 层,programmed input `"hi\nexit\n"`,看
+  fakeAgent.Run 被调 1 次 + out 包含 "answer"
+- `TestREPL_SlashExit` — input `"/exit\n"`,out 含 "bye",fakeAgent
+  未被调
+- `TestREPL_SlashReset` — input `"hi\n/reset\nexit\n"`,Turn 1 调 agent
+  一次,Turn 2 调 agent 但 `req.Messages` 只有 1 条 user message
+  (history 已被清)
+- `TestREPL_SlashHelp` — input `"/help\n/exit\n"`,out 含 "/reset" 和
+  "/exit"
+- `TestREPL_EOF_Exits` — input `""`,fakeAgent 未被调,返 nil
+
+**Risks**:
+- `Agent.Chat` 签名变更 → 4 个 spec 04 Run test 改成 `Run` 调用,
+  4 个 `agent_test.go` 测试改 1-2 行(`Run` 仍存在,所以改动小)
+- `cli.CLI` 加 `In io.Reader` 字段 → 7 个 cli_test.go `buildCLI` helper
+  要加 `in` buffer
+- `cli.CLI.Run` 无 args 时从"返 error"改成"进 REPL" → `TestRun_NoSubcommand_Errors`
+  删,替换为 `TestRun_NoSubcommand_StartsREPL`(input 空 + `/exit`)
+- 性能:`bufio.Scanner` 默认 `bufio.NewReader` 64 KB buffer,用户粘
+  100 KB+ prompt 会失败 — REPL prompt 自身有限,接受
+- 取消:`bufio.Scanner.Scan` 不读 `ctx`;Ctrl-C 终止靠 main 收 SIGINT
+  → 但 Go 缺默认 SIGINT handler,Ctrl-C 直接杀进程,接受
+
+**Performance impact**:无新增 dep,binary size 不变(REPL 走 stdlib)。
+REPL 空闲 RSS +5 MB(stdin scanner buffer + history slice);仍在
+20 MB 预算内。
+
+**Layering**:
+- `internal/agent` 仍 import `provider`;**不** import cli
+- `cmd/chaosbot/cli` import `agent` + `provider`(为 `provider.Message`
+  + `NewUserMessage` 类型),**不** import concrete provider
+- `os.Stdin` 注入 via DI alias,test 时换 `bytes.Buffer`
+
