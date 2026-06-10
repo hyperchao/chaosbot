@@ -184,8 +184,9 @@ go test -race -count=1 ./...
 ```
 
 `make build` injects `main.version` from `git describe --tags --dirty
---always` via `-ldflags -X`. Don't edit the `const version = "dev"` in
-`cmd/chaosbot/main.go`; that's only the fallback when no git tags exist.
+--always` via `-ldflags -X`. The `version` symbol in `cmd/chaosbot/main.go`
+**must be a `var`** (not `const`); the `"dev"` literal is only the
+fallback when no git tags exist.
 
 ## Common pitfalls
 

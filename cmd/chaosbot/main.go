@@ -16,7 +16,10 @@ import (
 )
 
 // version is set at build time via -ldflags "-X main.version=$(VERSION)".
-const version = "dev"
+// Must be `var` (not `const`) for -X to take effect: consts are
+// folded at the use site during compilation and have no addressable
+// storage left for the linker to overwrite.
+var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (env-only when empty)")
