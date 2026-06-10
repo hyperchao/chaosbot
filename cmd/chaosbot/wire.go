@@ -16,13 +16,12 @@ import (
 )
 
 // buildContainer wires the di container with everything cli.CLI
-// needs. Config is loaded once at the top and captured by the
-// downstream closures. Interface-typed factories must return a
-// non-nil value; emptyProvider stands in for the openai-backed
-// provider when the API key is missing.
-func buildContainer(configPath string) *di.DI {
-	cfg, _ := config.Load(configPath)
-
+// needs. cfg is the loaded config (or nil when --config was empty
+// and env vars didn't yield one); the caller has already printed
+// any Load error. Interface-typed factories must return a non-nil
+// value; emptyProvider stands in for the openai-backed provider
+// when the API key is missing.
+func buildContainer(cfg *config.Config) *di.DI {
 	c := di.New()
 
 	// Terminal / I/O + version.

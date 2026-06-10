@@ -13,6 +13,7 @@ import (
 	"github.com/hyperchao/di"
 
 	"chaosbot/cmd/chaosbot/cli"
+	"chaosbot/internal/config"
 )
 
 // version is set at build time via -ldflags "-X main.version=$(VERSION)".
@@ -26,7 +27,20 @@ func main() {
 	flag.Parse()
 	args := flag.Args()
 
-	cliApp := di.GetDI[*cli.CLI](buildContainer(*configPath))
+	if *configPath != "" {
+		if _, err := os.Stat(*configPath); err != nil {
+			fmt.Fprintf(os.Stderr, "chaosbot: --config %s: %v\n", *configPath, err)
+			os.Exit(1)
+		}
+	}
+
+	cfg, err := config.Load(*configPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "chaosbot:", err)
+		os.Exit(1)
+	}
+
+	cliApp := di.GetDI[*cli.CLI](buildContainer(cfg))
 
 	if err := cliApp.Run(args); err != nil {
 		fmt.Fprintln(os.Stderr, "chaosbot:", err)
