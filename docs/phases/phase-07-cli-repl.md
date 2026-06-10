@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `07` |
 | Sub-units | `07-1` … `07-4` |
-| Status | `🟡 in progress` (1/4 sub-units done; see 实现笔记) |
+| Status | `🟡 in progress` (2/4 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04 (Agent + Run), Phase 02 (provider.Config) |
 | Estimated total LOC | ~310 Go (80 + 100 + 30 + 100) |
@@ -80,9 +80,15 @@ func main() {
 
 - `07-1`  `internal/config` 包(`Config` struct + `Load(path)` YAML+env,
   ~80 Go LOC) — env vars 优先级高于 YAML 文件;YAML 不存在时只用 env
-- `07-2`  `cmd/chaosbot` cobra 重写(`run` / `repl` / `config` / `version` 子命令,
-  composition root,~100 Go LOC) — DI 用结构体赋值,不引 hyperchao/di(那个
-  等 Phase 08 测试补全时再上,MVP 直接 struct)
+- `07-2`  `cmd/chaosbot` 子命令 + composition root(本轮 `run` / `config` /
+  `version`,`repl` 留 07-4,~100 Go LOC)
+  - stdlib `flag` + 手动 dispatch(按 spec 决策**不**引 cobra,免 ~150 KB + 1 直接依赖)
+  - `Deps` struct 注入(`Agent` / `Config` / `Out` / `ErrOut` / `Version`),CLI 包不知道
+    di 存在(per AGENTS.md: interface 在 consumer 包,DI 在 main.go)
+  - `main.go` 走 `di.New()` 装配(`hyperchao/di`,per AGENTS.md),
+    `openai.New` 用闭包包成无参(因为 `openai.New(cfg)` 签名不匹配 `func() T`)
+  - `config.Load` 严格校验,但 `version` / no-args 走 bypass(`needsConfig` 判断),
+    不需要 API key 也能跑 — `chaosbot version` 因此可独立 smoke 测
 - `07-3`  `internal/ui/cli` 单次输出渲染(~30 Go LOC)— REPL 也复用
 - `07-4`  `internal/ui/repl` readline 循环(`chaosbot/readline` 库,
   `bufio.Scanner` 走 stdlib,~100 Go LOC) — slash commands: `/reset` `/exit`
@@ -193,3 +199,78 @@ defaults()  →  loadYAML(path)  →  applyEnv()  →  applyDefaults()  →  res
 - `--config` 显式路径之外的自动发现(XDG / cwd)按本阶段决策不做
 - 配置文件 watch / hot-reload 不做
 - 复杂类型(list / map)YAML 字段不暴露(MVP 用不到)
+
+### 07-2 — `cmd/chaosbot` 子命令 + composition root(DI 版)
+
+**新增 / 替换文件**:
+- `cmd/chaosbot/main.go` **~75 行** composition root:`flag.Parse` 拿 `--config`,
+  调 `config.Load`,失败时只对 `run` / `config` 子命令报错(让 `version` / no-args
+  不依赖 API key),然后 `buildAgent` 走 `di.New()` 装配,最后 `cli.Run(args, Deps)`
+- `cmd/chaosbot/cli/cli.go` **~110 行**:`Deps` 注入 5 件套(`Agent` / `Config` /
+  `Out` / `ErrOut` / `Version`);3 个 handler `runCmd` / `configCmd` / `versionCmd`
+- `cmd/chaosbot/cli/cli_test.go` **~150 行**:**手写 `fakeAgent`** 实现
+  `agent.Agent`,7 个 dispatch / handler 测(per AGENTS.md "no mock frameworks")
+
+**为什么这版 CLI 走 DI**(从 spec 决策的演化):
+- 07-2 第一次写时我用了 `Deps` struct + 手写 `openai.New` 装配,user 提了我违反
+  AGENTS.md "Use hyperchao/di for all wiring"
+- 回滚后 review `hyperchao/di/di.go` 源码,发现约束:`RegisterDI` 只接无参构造函数,
+  字段必须 exported 并打 `di:"type"` 标签(反射填值)
+- 这又引出 Phase 04 refactor:`Agent` 改 interface,`reActAgent` 字段 exported,
+  `New()` 无参,`Config` 抽 struct
+- 最后成型:**`internal/agent` 完全 DI 友好**;**`internal/agent/fake` 提供 Provider
+  fake**;**`cmd/chaosbot/cli` 拿 `agent.Agent` 接口(测试用 fakeAgent)**;**`main.go` 装配**
+
+**`needsConfig` 设计**:
+- `config.Load` 严格(要 API key)
+- 但 `chaosbot version` / no-args 不该强制要 API key
+- `main.go` 拿 `needsConfig(args)` 判断:仅 `run` / `config` 子命令失败时报 config 错
+- 这让 `chaosbot version` 可以独立 smoke 测,不依赖任何 secret
+
+**`openai.New` 闭包**:
+```go
+di.RegisterDI(c, func() provider.Provider {
+    return openai.New(provider.Config{...})  // 闭包捕获 cfg
+})
+```
+di 库 `func() T` 约束 vs `openai.New(provider.Config) provider.Provider` 不匹配,
+用闭包转接。**`internal/provider/openai` 不变**,CLI 不直接 import 它。
+
+**测试覆盖**(7 个,全 PASS):
+- `TestRun_NoSubcommand_Errors` — 空 args,error 提 REPL 07-4
+- `TestRun_UnknownSubcommand_Errors` — 未知子命令,error 含 bad name
+- `TestRun_Version` — `version` 走 `Deps.Version`
+- `TestRun_Config` — `config` 打印 11 字段(model / temperature / max_tokens 全部展示)
+- `TestRun_OneShot` — happy path,断言 `userInput == "hello"` 传给 agent
+- `TestRun_OneShot_MissingPrompt_Errors` — `run` 不带参数
+- `TestRun_OneShot_AgentError_Propagates` — agent 返回的 error 透传,`errors.Is` 验
+
+`fakeAgent` 在 cli_test.go 里就地实现,**只有 5 行**(`runFunc` 字段 + `Run` 方法),
+编译期断言 `var _ agent.Agent = (*fakeAgent)(nil)`。
+
+**冒烟测试**(手动 binary 验证):
+```
+$ ./bin/chaosbot version          # 无 API key 也跑
+chaosbot dev
+$ ./bin/chaosbot                  # 无 args,REPL hint
+chaosbot: no subcommand (REPL coming in 07-4; use 'chaosbot run "<prompt>"')
+$ ./bin/chaosbot foobar
+chaosbot: unknown subcommand: foobar (try 'run', 'config', 'version')
+$ ./bin/chaosbot run "hi"         # 缺 API key
+chaosbot: config: config: API key not set (use CHAOSBOT_API_KEY, ...)
+$ CHAOSBOT_API_KEY=sk-fake-test1234 ./bin/chaosbot config
+provider:    openai
+model:       (empty)
+...
+```
+
+**Layering 校验**:
+- `cmd/chaosbot/cli/cli.go` import `agent` / `config` / `context` / `fmt` / `io`,
+  **不** import `provider/openai` / `hyperchao/di`(di 是 main.go 的关注点)
+- `cmd/chaosbot/main.go` import `agent` / `cli` / `config` / `provider` /
+  `provider/openai` / `hyperchao/di`(composition root 唯一知道全部部件)
+- `grep "internal/provider/openai" cmd/chaosbot/cli/*.go` → 空(cli 不直接依赖 concrete provider)
+
+**自验**:`make test` 54/54 PASS(23 agent + 9 config + 6 provider + 2 openai
++ 14 cmd/chaosbot/cli);`make build` 1.5 MB;`make lint` clean;`gofmt -l .` clean。
+冒烟 5 条路径全对。

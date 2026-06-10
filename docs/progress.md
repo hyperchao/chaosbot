@@ -44,7 +44,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 06-2  | session 单测 | ⬜ | | | | | |
 | 06-3  | Agent 接入 session | ⬜ | | | | | |
 | 07-1  | config 加载(YAML + env) | ✅ | 06-03 | 06-03 | 140 | 8/8 | yaml.v3 入 go.mod;`CHAOSBOT_*` env 覆盖 YAML;api_key_env 间接解析;无 XDG/cwd 发现 |
-| 07-2  | cobra 子命令 stub | ⬜ | | | | | |
+| 07-2  | cobra 子命令 stub | ✅ | 06-03 | 06-03 | ~120 | 7/7 | **DI 版**:`main.go` 走 `di.New()` 装配;`cli` 拿 `agent.Agent` 接口 + 手写 `fakeAgent` mock;`needsConfig` 让 `version` 跳过 API key 校验;`openai.New` 用闭包转成无参 |
 | 07-3  | ui/cli 单次输出渲染 | ⬜ | | | | | |
 | 07-4  | ui/repl readline REPL | ⬜ | | | | | |
 | 08-1  | 测试补全(边界 + 错误路径) | ⬜ | | | | | |

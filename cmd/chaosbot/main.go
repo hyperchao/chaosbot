@@ -1,32 +1,32 @@
 // Command chaosbot is a tool-using AI agent CLI.
 //
-// Subcommands are wired in later phases. This phase ships only `version`
-// to prove the build, run, and version-injection pipeline end to end.
+// Composition root: parse flags, build the di container, get
+// the CLI, dispatch. The actual wiring (provider, agent, cli)
+// lives in wire.go.
 package main
 
 import (
+	"flag"
 	"fmt"
 	"os"
+
+	"github.com/hyperchao/di"
+
+	"chaosbot/cmd/chaosbot/cli"
 )
 
+// version is set at build time via -ldflags "-X main.version=$(VERSION)".
 const version = "dev"
 
 func main() {
-	if len(os.Args) < 2 {
-		usage()
-		os.Exit(2)
-	}
-	switch os.Args[1] {
-	case "version", "--version", "-v":
-		fmt.Println("chaosbot", version)
-	default:
-		usage()
-		os.Exit(2)
-	}
-}
+	configPath := flag.String("config", "", "path to config file (env-only when empty)")
+	flag.Parse()
+	args := flag.Args()
 
-func usage() {
-	fmt.Fprintln(os.Stderr, "usage: chaosbot <command> [args]")
-	fmt.Fprintln(os.Stderr, "commands:")
-	fmt.Fprintln(os.Stderr, "  version   print version")
+	cliApp := di.GetDI[*cli.CLI](buildContainer(*configPath))
+
+	if err := cliApp.Run(args); err != nil {
+		fmt.Fprintln(os.Stderr, "chaosbot:", err)
+		os.Exit(1)
+	}
 }
