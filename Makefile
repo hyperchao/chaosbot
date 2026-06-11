@@ -21,7 +21,7 @@ build: ## compile binary to bin/chaosbot
 	@mkdir -p $(BIN_DIR)
 	$(GO) build -trimpath -ldflags "$(LDFLAGS)" -o $(BIN) $(BUILD_PKG)
 
-test: ## run unit tests
+test: vet ## run unit tests (vet first)
 	$(GO) test -race -count=1 $(PKG)
 
 lint: fmt vet ## gofmt + go vet
