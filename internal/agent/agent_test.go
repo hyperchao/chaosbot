@@ -162,3 +162,54 @@ func TestRun_ContextCanceled(t *testing.T) {
 		t.Errorf("Calls = %d, want 0 (pre-canceled ctx should bail before first Chat)", fp.Calls)
 	}
 }
+
+// TestChat_MultiTurn_AccumulatesHistory verifies that Chat
+// uses the caller's history as-is (does not seed a new turn)
+// and returns the last assistant message. This is the contract
+// the REPL depends on to maintain in-memory multi-turn state.
+func TestChat_MultiTurn_AccumulatesHistory(t *testing.T) {
+	fp := providerfake.New("multi")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "answer-1"}},
+		{Resp: &provider.Response{Content: "answer-2"}},
+	}
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1})
+
+	// Turn 1.
+	reply1, err := a.Chat(context.Background(), []provider.Message{
+		agent.NewUserMessage("q1"),
+	})
+	if err != nil {
+		t.Fatalf("Chat turn 1: %v", err)
+	}
+	if reply1.Content != "answer-1" {
+		t.Errorf("turn 1 reply = %q, want %q", reply1.Content, "answer-1")
+	}
+
+	// Turn 2: caller appends assistant's reply1 to its own
+	// history and adds a new user message. The agent must see
+	// the full 3-message history on the next Chat call.
+	history := []provider.Message{
+		agent.NewUserMessage("q1"),
+		reply1,
+		agent.NewUserMessage("q2"),
+	}
+	reply2, err := a.Chat(context.Background(), history)
+	if err != nil {
+		t.Fatalf("Chat turn 2: %v", err)
+	}
+	if reply2.Content != "answer-2" {
+		t.Errorf("turn 2 reply = %q, want %q", reply2.Content, "answer-2")
+	}
+
+	// Provider must have seen both full histories.
+	if len(fp.AllReqs) != 2 {
+		t.Fatalf("AllReqs len = %d, want 2", len(fp.AllReqs))
+	}
+	if got := len(fp.AllReqs[0].Messages); got != 1 {
+		t.Errorf("turn 1 req.Messages len = %d, want 1", got)
+	}
+	if got := len(fp.AllReqs[1].Messages); got != 3 {
+		t.Errorf("turn 2 req.Messages len = %d, want 3 (q1 + answer-1 + q2)", got)
+	}
+}

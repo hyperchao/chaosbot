@@ -9,9 +9,19 @@ import (
 )
 
 // Agent is the boundary the CLI, session, and tests depend on.
-// One method: drive the ReAct loop with the user's prompt and
-// return the final answer.
+//
+// Chat is the primary entry: pass a full conversation history
+// (system / user / assistant / tool messages in order) and get
+// back the final assistant message. The ReAct loop runs to
+// completion or until ctx is canceled.
+//
+// Run is a one-shot wrapper around Chat for callers that don't
+// maintain their own history (e.g. `chaosbot run "<prompt>"`).
+// Callers that want multi-turn (the REPL, future session
+// persistence) use Chat directly and accumulate history
+// themselves.
 type Agent interface {
+	Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error)
 	Run(ctx context.Context, userInput string) (string, error)
 }
 
@@ -60,36 +70,49 @@ var ErrMaxSteps = errors.New("agent: max steps reached without final answer")
 // defaultMaxSteps is the fallback when Config.MaxSteps <= 0.
 const defaultMaxSteps = 10
 
-// Run implements Agent. It drives the ReAct loop: seed history
-// with the user message and call step up to MaxSteps times.
-// The loop terminates when step returns a non-empty finalContent,
-// when the context is canceled, when a provider / Validate error
-// fires, or when MaxSteps is exhausted (in which case
-// ErrMaxSteps is wrapped and returned).
+// Run implements Agent as a one-shot wrapper around Chat. It
+// seeds the history with the user's message and returns the
+// assistant's final text content. Callers that want multi-turn
+// (the REPL, session persistence) should use Chat directly and
+// accumulate history themselves.
 func (a *reActAgent) Run(ctx context.Context, userInput string) (string, error) {
-	if err := ctx.Err(); err != nil {
+	reply, err := a.Chat(ctx, []provider.Message{NewUserMessage(userInput)})
+	if err != nil {
 		return "", err
+	}
+	return reply.Content, nil
+}
+
+// Chat implements Agent. It drives the ReAct loop on top of the
+// caller's history and returns the final assistant message.
+// The loop terminates when step returns an assistant message
+// with no tool calls, when ctx is canceled, when a provider /
+// Validate error fires, or when MaxSteps is exhausted (in
+// which case ErrMaxSteps is wrapped and returned).
+func (a *reActAgent) Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error) {
+	if err := ctx.Err(); err != nil {
+		return provider.Message{}, err
 	}
 	max := a.Cfg.MaxSteps
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
-	var final string
-	var err error
-	history := []provider.Message{NewUserMessage(userInput)}
+	history := append([]provider.Message(nil), msgs...)
 	for i := 0; i < max; i++ {
-		if err = ctx.Err(); err != nil {
-			return "", err
+		if err := ctx.Err(); err != nil {
+			return provider.Message{}, err
 		}
+		var final string
+		var err error
 		history, final, err = a.step(ctx, history)
 		if err != nil {
-			return "", err
+			return provider.Message{}, err
 		}
 		if final != "" {
-			return final, nil
+			return history[len(history)-1], nil
 		}
 	}
-	return "", fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
+	return provider.Message{}, fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
 }
 
 // step performs one ReAct iteration: send history to the

@@ -14,16 +14,36 @@ import (
 	"chaosbot/cmd/chaosbot/cli"
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
+	"chaosbot/internal/provider"
 )
 
 // fakeAgent is a hand-written test double of agent.Agent.
 // Per AGENTS.md: no mock frameworks, just hand-written fakes.
 type fakeAgent struct {
-	runFunc func(ctx context.Context, userInput string) (string, error)
+	runFunc  func(ctx context.Context, userInput string) (string, error)
+	chatFunc func(ctx context.Context, msgs []provider.Message) (provider.Message, error)
 }
 
 func (f *fakeAgent) Run(ctx context.Context, userInput string) (string, error) {
 	return f.runFunc(ctx, userInput)
+}
+
+func (f *fakeAgent) Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error) {
+	if f.chatFunc != nil {
+		return f.chatFunc(ctx, msgs)
+	}
+	// Default: behave like Run for the last user message.
+	var last string
+	for _, m := range msgs {
+		if m.Role == provider.RoleUser {
+			last = m.Content
+		}
+	}
+	reply, err := f.runFunc(ctx, last)
+	if err != nil {
+		return provider.Message{}, err
+	}
+	return provider.Message{Role: provider.RoleAssistant, Content: reply}, nil
 }
 
 var _ agent.Agent = (*fakeAgent)(nil)
