@@ -92,14 +92,27 @@ func main() {
 - `07-3`  `internal/ui/cli` 单次输出渲染(~30 Go LOC)— REPL 也复用
 - `07-4`  REPL loop(in `cmd/chaosbot/cli`, stdlib `bufio.Scanner`,
   ~100 Go LOC) — slash commands: `/reset` `/exit` `/help`
-  - `agent.Agent` interface 加 `Chat(ctx, msgs) (msg, err)` 方法(暴露
-    history);`Run(prompt)` 改成 `Chat` 的薄包装,保留向后兼容
-  - REPL 持 `[]provider.Message` in-memory,`/reset` 清空,`/exit` 返 nil
-  - `cli.CLI.Run` 无 args 时 dispatch 到 `replCmd(os.Stdin, c.Out,
-    c.ErrOut, c.Agent)`(`os.Stdin` 注入式 via factory,test 时换成
-    `bytes.Buffer`)
+  - `agent.Agent` interface **2 methods**:`Run(ctx, prompt) (reply, error)`
+    + `Reset()`. `*reActAgent` 内部持 `history []provider.Message`,
+    `Run` 把 user msg 累加进 history、ReAct 循环跑、最终 append
+    assistant reply;`Reset` 把 history 清空
+  - REPL 不再自己维护 history,直接调 `agent.Run` 和 `agent.Reset`,
+    `cli.replCmd` 是纯 dispatch
+  - `cli.CLI.Run` 无 args 时 dispatch 到 `replCmd()`,REPL 从 `c.In`
+    读行(`os.Stdin` DI alias `"in"`,test 时换 `bytes.Buffer`)
+  - `/reset` slash → `c.Agent.Reset()`;`/exit` 返 nil;`/help` 列表;
+    EOF 视为 /exit
   - **defer** `/tools` to Phase 05(没 tools,空 `/tools` 会困惑)
-  - **defer** session persistence to Phase 06(重启失 history)
+  - **defer** session persistence to Phase 06(重启失 history;Reset
+    不写盘,仅清 in-memory)
+
+  **Decision(recorded)**:agent 持 history 而不是 caller 持。理由:
+  - "agent" 概念本身包含对话状态,纯函数化没意义(只是把 state 推到
+    session 层,名字换了责任没变)
+  - 跟 Phase 06 session persistence 衔接:`Session.Send/Reset` 包裹
+    agent.Run/Reset 即可,history 复用
+  - cli / session / test 都不必关心 history slice 细节(append 谁、
+    谁负责 copy、谁负责清空)
 
 ## Test points
 
@@ -111,16 +124,14 @@ func main() {
 | `TestLoad_MissingAPIKey_ReturnsError` | 07-1 | unit |
 | `TestRun_OneShot` (subcommand dispatcher) | 07-2 | unit (fakeProvider, capture args) |
 | `TestRun_DefaultsToREPL` (no args) | 07-2 | unit |
-| `TestChat_MultiTurn_AccumulatesHistory` | 07-4 | unit (fakeProvider, capture msgs) |
+| `TestRun_MultiTurn_AccumulatesHistory` | 07-4 | unit (fakeProvider, capture msgs) |
+| `TestRun_Reset_ClearsHistory` | 07-4 | unit (fakeProvider, capture msgs) |
+| `TestREPL_NoSubcommand_StartsREPL` | 07-4 | unit (programmed readline input) |
 | `TestREPL_TwoTurnLoop` | 07-4 | unit (programmed readline input) |
 | `TestREPL_SlashExit` | 07-4 | unit |
 | `TestREPL_SlashReset` | 07-4 | unit |
 | `TestREPL_SlashHelp` | 07-4 | unit |
 | `TestREPL_EOF_Exits` | 07-4 | unit (empty input) |
-| `TestRender_Bare` | 07-3 | unit (just fmt-equivalent) |
-| `TestREPL_TwoTurnLoop` | 07-4 | unit (programmed readline input) |
-| `TestREPL_SlashExit` | 07-4 | unit |
-| `TestREPL_SlashReset` | 07-4 | unit |
 
 The `cmd/chaosbot/main.go` itself is left untested at the package
 level (it's a 5-line composition root). Subcommand logic lives
@@ -290,65 +301,70 @@ model:       (empty)
 
 ### 07-4 — REPL 循环(`/reset` `/exit` `/help`)
 
-**Goal**:让 `chaosbot`(无 args)进多轮 REPL,history 留 in-memory。
+**Goal**:让 `chaosbot`(无 args)进多轮 REPL,history 由 agent 维护。
 
-**Public API 增项**:
-- `internal/agent/agent.go`:`Agent` interface 加
+**Public API 改写**(本轮决定 — 替代之前的 `Chat` 方案):
+- `internal/agent/agent.go`:`Agent` interface 撤掉 `Chat`,改为
   ```go
-  Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error)
+  type Agent interface {
+      Run(ctx context.Context, prompt string) (string, error)
+      Reset()
+  }
   ```
-  `Run(prompt string)` 改写成 `Chat` 的薄包装
-  (`Run(p) == Chat(ctx, []Message{NewUserMessage(p)})` 取 assistant text),
-  保留 4 个 spec 04 Run test 的语义。
-- `cmd/chaosbot/cli/cli.go`:加
-  ```go
-  func (c *CLI) replCmd(in io.Reader) error   // stdin / buffer
-  ```
-  持 `history []provider.Message`,循环 `bufio.Scanner`:
-  - `/reset` → 清空 history,print `history cleared`
-  - `/exit` → 返 nil
+  `*reActAgent` 加 unexported `history []provider.Message` 字段;
+  `Run` 内部:append `NewUserMessage(prompt)` → ReAct 循环 → append
+  `NewAssistantMessage(reply)` → 返回 `reply.Content`;`Reset()` 把
+  `history = history[:0]`。`*reActAgent` 字段全 exported(di 要求),
+  但 `history` 不打 `di:"type"` tag — di 不会覆盖它。
+- `cmd/chaosbot/cli/cli.go`:`replCmd()` 内部不再维护 history 变量,
+  循环 `bufio.Scanner` 读行:
+  - `/reset` → `c.Agent.Reset()`,print `history cleared`
+  - `/exit`(alias `/quit`)→ 返 nil
   - `/help` → print slash commands 列表
   - `<empty>`(EOF)→ 返 nil
-  - 其他 → `c.Agent.Chat(ctx, append(history, NewUserMessage(line)))`,
-    append 返回的 assistant 到 history,print `assistant.Content`
-
+  - 其他 → `c.Agent.Run(ctx, line)`,print `reply`
 - `cmd/chaosbot/wire.go`:注册 `*cli.CLI.In` 字段
   (tag `di:"alias:in"`,factory `func() io.Reader { return os.Stdin }`)。
-  `os.Stdin` 在 REPL 启动时不能 close,是单例。
+  `os.Stdin` 是单例,REPL 启动时不能 close。
 
-**Test points**(已在 § Test points 表里):
-- `TestChat_MultiTurn_AccumulatesHistory` — agent 层,fake provider 收到
-  的 `req.Messages` 包含 turn 1 + turn 2 全部 4 条 user/assistant
-- `TestREPL_TwoTurnLoop` — cli 层,programmed input `"hi\nexit\n"`,看
-  fakeAgent.Run 被调 1 次 + out 包含 "answer"
-- `TestREPL_SlashExit` — input `"/exit\n"`,out 含 "bye",fakeAgent
-  未被调
-- `TestREPL_SlashReset` — input `"hi\n/reset\nexit\n"`,Turn 1 调 agent
-  一次,Turn 2 调 agent 但 `req.Messages` 只有 1 条 user message
-  (history 已被清)
-- `TestREPL_SlashHelp` — input `"/help\n/exit\n"`,out 含 "/reset" 和
-  "/exit"
+**Test points**:
+- `TestRun_MultiTurn_AccumulatesHistory` — agent 层:连续 2 次
+  `Run`,fake provider 收到的第二次 `req.Messages` 包含第一次的
+  user+assistant 4 条
+- `TestRun_Reset_ClearsHistory` — agent 层:`Run` 一次,然后
+  `Reset()`,再 `Run` 一次,第二次 `req.Messages` 只 1 条 user
+- `TestREPL_NoSubcommand_StartsREPL` — cli 层,空 args 走 REPL,
+  banner + 1 轮对话
+- `TestREPL_TwoTurnLoop` — cli 层,2 行 user input,verify fakeAgent
+  Run 被调 2 次
+- `TestREPL_SlashExit` — input `"/exit\n"`,fakeAgent 未被调
+- `TestREPL_SlashReset` — input `"hi\n/reset\nexit\n"`,Turn 1 调
+  agent 一次,Turn 2 调 agent 但 `req.Messages` 已被清(只 1 条 user)
+- `TestREPL_SlashHelp` — input `"/help\n/exit\n"`,out 含 "/reset" 等
 - `TestREPL_EOF_Exits` — input `""`,fakeAgent 未被调,返 nil
 
 **Risks**:
-- `Agent.Chat` 签名变更 → 4 个 spec 04 Run test 改成 `Run` 调用,
-  4 个 `agent_test.go` 测试改 1-2 行(`Run` 仍存在,所以改动小)
-- `cli.CLI` 加 `In io.Reader` 字段 → 7 个 cli_test.go `buildCLI` helper
-  要加 `in` buffer
-- `cli.CLI.Run` 无 args 时从"返 error"改成"进 REPL" → `TestRun_NoSubcommand_Errors`
-  删,替换为 `TestRun_NoSubcommand_StartsREPL`(input 空 + `/exit`)
+- `Agent` interface 撤回 `Chat` → 之前 commit 53d4b6c 加的 `Chat`
+  + `TestChat_MultiTurn_AccumulatesHistory` 都要撤
+- `cli_test.go` 的 `fakeAgent` 撤掉 `chatFunc` 字段,只留 `runFunc` +
+  `resetCalls` 计数器
+- `cli.CLI` 加 `In io.Reader` 字段 → 7 个 cli_test.go `buildCLI`
+  helper 改 1-2 行(加 `in` buffer)
+- `cli.CLI.Run` 无 args 时从"返 error"改成"进 REPL" →
+  `TestRun_NoSubcommand_Errors` 删,替换为
+  `TestREPL_NoSubcommand_StartsREPL`
 - 性能:`bufio.Scanner` 默认 `bufio.NewReader` 64 KB buffer,用户粘
   100 KB+ prompt 会失败 — REPL prompt 自身有限,接受
-- 取消:`bufio.Scanner.Scan` 不读 `ctx`;Ctrl-C 终止靠 main 收 SIGINT
-  → 但 Go 缺默认 SIGINT handler,Ctrl-C 直接杀进程,接受
+- 取消:`bufio.Scanner.Scan` 不读 `ctx`;Ctrl-C 直接杀进程,接受
 
 **Performance impact**:无新增 dep,binary size 不变(REPL 走 stdlib)。
-REPL 空闲 RSS +5 MB(stdin scanner buffer + history slice);仍在
-20 MB 预算内。
+REPL 空闲 RSS +5 MB(stdin scanner buffer + agent.history slice);
+仍在 20 MB 预算内。
 
 **Layering**:
 - `internal/agent` 仍 import `provider`;**不** import cli
-- `cmd/chaosbot/cli` import `agent` + `provider`(为 `provider.Message`
-  + `NewUserMessage` 类型),**不** import concrete provider
+- `cmd/chaosbot/cli` import `agent` + `context` + `bufio` + `io` +
+  `strings`;**不** import concrete provider,**不** import `provider`
+  package(只通过 agent 的方法间接触碰 history)
 - `os.Stdin` 注入 via DI alias,test 时换 `bytes.Buffer`
 
