@@ -50,37 +50,30 @@ var _ agent.Agent = (*fakeAgent)(nil)
 
 // buildCLI wires a CLI via the di library. Tests pass fakes
 // (a fakeAgent) and pre-built values; the same pattern main.go
-// uses for production wiring.
+// uses for production wiring. The `in` reader is registered
+// even though most subcommand tests don't read from it — the
+// di library requires every aliased field to resolve.
 func buildCLI(t *testing.T, fp agent.Agent, cfg *config.Config) (*cli.CLI, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	out := &bytes.Buffer{}
 	errOut := &bytes.Buffer{}
+	in := &bytes.Buffer{}
 	c := di.New()
 	di.RegisterDI(c, func() agent.Agent { return fp })
 	di.RegisterDI(c, func() *config.Config { return cfg })
+	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
 	di.RegisterAliasDI(c, "errout", func() io.Writer { return errOut })
 	di.RegisterAliasDI(c, "version", func() string { return "vtest" })
 	// *cli.CLI factory: di calls it, gets a zero *cli.CLI,
-	// then walks its fields and injects Agent / Config / Out /
-	// ErrOut / Version from the factories registered above.
-	// di's "reflect.Value.Set on zero Value" panic for nil
-	// interface factories means the *config.Config factory
-	// above must NOT return nil — tests pass a real (possibly
-	// zero) *config.Config value instead.
+	// then walks its fields and injects Agent / Config / In /
+	// Out / ErrOut / Version from the factories registered
+	// above. di's "reflect.Value.Set on zero Value" panic
+	// for nil interface factories means the *config.Config
+	// factory above must NOT return nil — tests pass a real
+	// (possibly zero) *config.Config value instead.
 	di.RegisterDI(c, func() *cli.CLI { return &cli.CLI{} })
 	return di.GetDI[*cli.CLI](c), out, errOut
-}
-
-func TestRun_NoSubcommand_Errors(t *testing.T) {
-	c, _, _ := buildCLI(t, &fakeAgent{}, &config.Config{})
-	err := c.Run([]string{})
-	if err == nil {
-		t.Fatal("want error for empty args")
-	}
-	if !strings.Contains(err.Error(), "REPL") {
-		t.Errorf("err should mention REPL coming in 07-4: %v", err)
-	}
 }
 
 func TestRun_UnknownSubcommand_Errors(t *testing.T) {
@@ -180,33 +173,157 @@ func TestRun_OneShot_AgentError_Propagates(t *testing.T) {
 		t.Errorf("err = %v, want wraps %v", err, wantErr)
 	}
 }
-func TestConfig_NoConfig_ReturnsError(t *testing.T) {
-	// REMOVED: see TestRun_NoProvider_ReturnsFriendlyError
-	// below. The di library does not accept nil-interface
-	// factories, so the *config.Config factory in buildCLI /
-	// wire.go always returns a real (possibly zero) value.
-	// The cli "no config loaded" path is unreachable in
-	// production.
+
+// buildREPL wires a CLI whose In reader is the supplied buffer.
+// Use this for tests that drive the REPL with programmed input.
+func buildREPL(t *testing.T, fp agent.Agent, input string) (*cli.CLI, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	in := bytes.NewBufferString(input)
+	c := di.New()
+	di.RegisterDI(c, func() agent.Agent { return fp })
+	di.RegisterDI(c, func() *config.Config { return &config.Config{} })
+	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
+	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
+	di.RegisterAliasDI(c, "errout", func() io.Writer { return errOut })
+	di.RegisterAliasDI(c, "version", func() string { return "vtest" })
+	di.RegisterDI(c, func() *cli.CLI { return &cli.CLI{} })
+	return di.GetDI[*cli.CLI](c), out, errOut
 }
 
-// TestRun_NoProvider_ReturnsFriendlyError covers the path
-// where the agent's underlying Provider is emptyProvider
-// (config is missing or has no API key). The fakeAgent here
-// stands in for the real *reActAgent; the *reActAgent's
-// Provider field would be emptyProvider, which errors on
-// Chat. The cli receives the error from Agent.Run and
-// surfaces it to the user as the exit-code error.
-func TestRun_NoProvider_ReturnsFriendlyError(t *testing.T) {
-	c, _, _ := buildCLI(t, &fakeAgent{
+// TestREPL_NoSubcommand_StartsREPL replaces the pre-07-4
+// "no subcommand" error test. With 07-4 landed, an empty
+// argv goes straight into the REPL.
+func TestREPL_NoSubcommand_StartsREPL(t *testing.T) {
+	c, out, _ := buildREPL(t, &fakeAgent{
 		runFunc: func(_ context.Context, _ string) (string, error) {
-			return "", errors.New("no provider configured (set CHAOSBOT_API_KEY or pass --config)")
+			return "answer", nil
 		},
-	}, &config.Config{})
-	err := c.Run([]string{"run", "hi"})
-	if err == nil {
-		t.Fatal("want error when provider is missing")
+	}, "hi\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(err.Error(), "no provider") {
-		t.Errorf("err = %v, want mentions 'no provider'", err)
+	if !strings.Contains(out.String(), "answer") {
+		t.Errorf("out = %q, want contains 'answer'", out.String())
+	}
+	if !strings.Contains(out.String(), "REPL") {
+		t.Errorf("out = %q, want contains 'REPL' banner", out.String())
+	}
+}
+
+// TestREPL_TwoTurnLoop drives two user prompts and verifies
+// that the second turn's history contains the first turn's
+// full exchange (q1 + a1) plus the new user message (q2).
+// The LLM needs to see what the user said to ground the
+// assistant's prior reply.
+func TestREPL_TwoTurnLoop(t *testing.T) {
+	var secondTurnMsgs []provider.Message
+	c, out, _ := buildREPL(t, &fakeAgent{
+		chatFunc: func(_ context.Context, msgs []provider.Message) (provider.Message, error) {
+			reply := provider.Message{
+				Role:    provider.RoleAssistant,
+				Content: "reply-" + string(rune('0'+len(msgs))),
+			}
+			if len(msgs) > 1 {
+				secondTurnMsgs = msgs
+			}
+			return reply, nil
+		},
+	}, "hi\nagain\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if !strings.Contains(out.String(), "reply-1") {
+		t.Errorf("out = %q, want contains 'reply-1'", out.String())
+	}
+	if !strings.Contains(out.String(), "reply-3") {
+		t.Errorf("out = %q, want contains 'reply-3' (turn 2 sees 3 prior messages: q1 + a1 + q2)", out.String())
+	}
+	if len(secondTurnMsgs) != 3 {
+		t.Fatalf("turn 2 history len = %d, want 3 (q1 + a1 + q2)", len(secondTurnMsgs))
+	}
+	want := []provider.Message{
+		{Role: provider.RoleUser, Content: "hi"},
+		{Role: provider.RoleAssistant, Content: "reply-1"},
+		{Role: provider.RoleUser, Content: "again"},
+	}
+	for i, m := range want {
+		if secondTurnMsgs[i].Role != m.Role || secondTurnMsgs[i].Content != m.Content {
+			t.Errorf("turn 2 msg[%d] = %+v, want %+v", i, secondTurnMsgs[i], m)
+		}
+	}
+}
+
+// TestREPL_SlashExit verifies /exit returns nil and skips the
+// agent entirely.
+func TestREPL_SlashExit(t *testing.T) {
+	called := false
+	c, _, _ := buildREPL(t, &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			called = true
+			return "", nil
+		},
+	}, "/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if called {
+		t.Error("agent should not be invoked after /exit")
+	}
+}
+
+// TestREPL_SlashReset verifies /reset clears history. After
+// /reset, the next turn's history must contain only the new
+// user message (not the previous turn's reply).
+func TestREPL_SlashReset(t *testing.T) {
+	var postResetMsgs []provider.Message
+	c, _, _ := buildREPL(t, &fakeAgent{
+		chatFunc: func(_ context.Context, msgs []provider.Message) (provider.Message, error) {
+			postResetMsgs = msgs
+			return provider.Message{Role: provider.RoleAssistant, Content: "ok"}, nil
+		},
+	}, "first\n/reset\nsecond\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(postResetMsgs) != 1 {
+		t.Errorf("post-/reset history len = %d, want 1 (only the new user message)", len(postResetMsgs))
+	}
+	if len(postResetMsgs) > 0 && postResetMsgs[0].Content != "second" {
+		t.Errorf("post-/reset user msg = %q, want %q", postResetMsgs[0].Content, "second")
+	}
+}
+
+// TestREPL_SlashHelp verifies /help prints the slash command
+// list.
+func TestREPL_SlashHelp(t *testing.T) {
+	c, out, _ := buildREPL(t, &fakeAgent{}, "/help\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	for _, want := range []string{"/reset", "/exit", "/help"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("out missing %q\n--- output ---\n%s", want, out.String())
+		}
+	}
+}
+
+// TestREPL_EOF_Exits verifies that an empty input (no lines)
+// is treated as EOF and returns nil without invoking the
+// agent.
+func TestREPL_EOF_Exits(t *testing.T) {
+	called := false
+	c, _, _ := buildREPL(t, &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			called = true
+			return "", nil
+		},
+	}, "")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if called {
+		t.Error("agent should not be invoked on EOF")
 	}
 }
