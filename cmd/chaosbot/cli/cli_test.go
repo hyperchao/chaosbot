@@ -14,36 +14,26 @@ import (
 	"chaosbot/cmd/chaosbot/cli"
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
-	"chaosbot/internal/provider"
 )
 
 // fakeAgent is a hand-written test double of agent.Agent.
 // Per AGENTS.md: no mock frameworks, just hand-written fakes.
 type fakeAgent struct {
-	runFunc  func(ctx context.Context, userInput string) (string, error)
-	chatFunc func(ctx context.Context, msgs []provider.Message) (provider.Message, error)
+	runFunc    func(ctx context.Context, userInput string) (string, error)
+	resetCalls int
+	// prompts captures every prompt passed to Run, so tests
+	// can verify multi-turn ordering without the agent owning
+	// history.
+	prompts []string
 }
 
 func (f *fakeAgent) Run(ctx context.Context, userInput string) (string, error) {
+	f.prompts = append(f.prompts, userInput)
 	return f.runFunc(ctx, userInput)
 }
 
-func (f *fakeAgent) Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error) {
-	if f.chatFunc != nil {
-		return f.chatFunc(ctx, msgs)
-	}
-	// Default: behave like Run for the last user message.
-	var last string
-	for _, m := range msgs {
-		if m.Role == provider.RoleUser {
-			last = m.Content
-		}
-	}
-	reply, err := f.runFunc(ctx, last)
-	if err != nil {
-		return provider.Message{}, err
-	}
-	return provider.Message{Role: provider.RoleAssistant, Content: reply}, nil
+func (f *fakeAgent) Reset() {
+	f.resetCalls++
 }
 
 var _ agent.Agent = (*fakeAgent)(nil)
@@ -213,45 +203,31 @@ func TestREPL_NoSubcommand_StartsREPL(t *testing.T) {
 }
 
 // TestREPL_TwoTurnLoop drives two user prompts and verifies
-// that the second turn's history contains the first turn's
-// full exchange (q1 + a1) plus the new user message (q2).
-// The LLM needs to see what the user said to ground the
-// assistant's prior reply.
+// that the fakeAgent's Run is invoked twice with the right
+// prompts. History is owned by the agent under test (a real
+// *reActAgent would feed back the prior exchange to the
+// provider; we only need to confirm dispatch here).
 func TestREPL_TwoTurnLoop(t *testing.T) {
-	var secondTurnMsgs []provider.Message
-	c, out, _ := buildREPL(t, &fakeAgent{
-		chatFunc: func(_ context.Context, msgs []provider.Message) (provider.Message, error) {
-			reply := provider.Message{
-				Role:    provider.RoleAssistant,
-				Content: "reply-" + string(rune('0'+len(msgs))),
-			}
-			if len(msgs) > 1 {
-				secondTurnMsgs = msgs
-			}
-			return reply, nil
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, prompt string) (string, error) {
+			return "reply-to-" + prompt, nil
 		},
-	}, "hi\nagain\n/exit\n")
+	}
+	c, out, _ := buildREPL(t, fa, "hi\nagain\n/exit\n")
 	if err := c.Run([]string{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if !strings.Contains(out.String(), "reply-1") {
-		t.Errorf("out = %q, want contains 'reply-1'", out.String())
+	if len(fa.prompts) != 2 {
+		t.Fatalf("prompts len = %d, want 2", len(fa.prompts))
 	}
-	if !strings.Contains(out.String(), "reply-3") {
-		t.Errorf("out = %q, want contains 'reply-3' (turn 2 sees 3 prior messages: q1 + a1 + q2)", out.String())
+	if fa.prompts[0] != "hi" || fa.prompts[1] != "again" {
+		t.Errorf("prompts = %v, want [hi again]", fa.prompts)
 	}
-	if len(secondTurnMsgs) != 3 {
-		t.Fatalf("turn 2 history len = %d, want 3 (q1 + a1 + q2)", len(secondTurnMsgs))
+	if !strings.Contains(out.String(), "reply-to-hi") {
+		t.Errorf("out = %q, want contains 'reply-to-hi'", out.String())
 	}
-	want := []provider.Message{
-		{Role: provider.RoleUser, Content: "hi"},
-		{Role: provider.RoleAssistant, Content: "reply-1"},
-		{Role: provider.RoleUser, Content: "again"},
-	}
-	for i, m := range want {
-		if secondTurnMsgs[i].Role != m.Role || secondTurnMsgs[i].Content != m.Content {
-			t.Errorf("turn 2 msg[%d] = %+v, want %+v", i, secondTurnMsgs[i], m)
-		}
+	if !strings.Contains(out.String(), "reply-to-again") {
+		t.Errorf("out = %q, want contains 'reply-to-again'", out.String())
 	}
 }
 
@@ -273,25 +249,27 @@ func TestREPL_SlashExit(t *testing.T) {
 	}
 }
 
-// TestREPL_SlashReset verifies /reset clears history. After
-// /reset, the next turn's history must contain only the new
-// user message (not the previous turn's reply).
+// TestREPL_SlashReset verifies /reset calls Agent.Reset. We
+// can't observe what the agent does with that signal (history
+// is internal) so we count the calls.
 func TestREPL_SlashReset(t *testing.T) {
-	var postResetMsgs []provider.Message
-	c, _, _ := buildREPL(t, &fakeAgent{
-		chatFunc: func(_ context.Context, msgs []provider.Message) (provider.Message, error) {
-			postResetMsgs = msgs
-			return provider.Message{Role: provider.RoleAssistant, Content: "ok"}, nil
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			return "ok", nil
 		},
-	}, "first\n/reset\nsecond\n/exit\n")
+	}
+	c, out, _ := buildREPL(t, fa, "first\n/reset\nsecond\n/exit\n")
 	if err := c.Run([]string{}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(postResetMsgs) != 1 {
-		t.Errorf("post-/reset history len = %d, want 1 (only the new user message)", len(postResetMsgs))
+	if fa.resetCalls != 1 {
+		t.Errorf("Reset calls = %d, want 1", fa.resetCalls)
 	}
-	if len(postResetMsgs) > 0 && postResetMsgs[0].Content != "second" {
-		t.Errorf("post-/reset user msg = %q, want %q", postResetMsgs[0].Content, "second")
+	if len(fa.prompts) != 2 || fa.prompts[0] != "first" || fa.prompts[1] != "second" {
+		t.Errorf("prompts = %v, want [first second]", fa.prompts)
+	}
+	if !strings.Contains(out.String(), "history cleared") {
+		t.Errorf("out = %q, want contains 'history cleared'", out.String())
 	}
 }
 

@@ -15,7 +15,6 @@ import (
 
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
-	"chaosbot/internal/provider"
 )
 
 // CLI is the wired-up command-line surface. All fields are
@@ -97,21 +96,23 @@ func (c *CLI) versionCmd(args []string) error {
 	return nil
 }
 
-// replCmd drives the read-eval-print loop. The history is kept
-// in process memory and fed into agent.Agent.Chat on each turn.
-// Slash commands: /reset clears history, /exit returns nil,
-// /help prints the available commands. EOF (empty input) is
-// treated like /exit.
+// replCmd drives the read-eval-print loop. History lives in
+// the agent; the CLI just dispatches each line to Agent.Run
+// and prints the reply. Slash commands: /reset calls
+// Agent.Reset, /exit returns nil, /help prints the available
+// commands. EOF (empty input) is treated like /exit.
 func (c *CLI) replCmd() error {
 	if c.Agent == nil {
 		return errors.New("repl: no agent available (config not loaded)")
 	}
 	fmt.Fprintln(c.Out, "chaosbot REPL — type '/help' for commands, Ctrl-D to exit")
-	history := []provider.Message{}
 	scanner := bufio.NewScanner(c.In)
 	for {
 		fmt.Fprint(c.Out, "> ")
 		if !scanner.Scan() {
+			if err := scanner.Err(); err != nil {
+				return fmt.Errorf("repl: read input: %w", err)
+			}
 			return nil
 		}
 		line := strings.TrimSpace(scanner.Text())
@@ -120,7 +121,7 @@ func (c *CLI) replCmd() error {
 		}
 		switch line {
 		case "/reset":
-			history = history[:0]
+			c.Agent.Reset()
 			fmt.Fprintln(c.Out, "history cleared")
 			continue
 		case "/exit", "/quit":
@@ -132,14 +133,12 @@ func (c *CLI) replCmd() error {
 			fmt.Fprintln(c.Out, "  /help     show this message")
 			continue
 		}
-		userMsg := provider.Message{Role: provider.RoleUser, Content: line}
-		reply, err := c.Agent.Chat(context.Background(), append(history, userMsg))
+		reply, err := c.Agent.Run(context.Background(), line)
 		if err != nil {
 			fmt.Fprintln(c.ErrOut, "error:", err)
 			continue
 		}
-		history = append(append(history, userMsg), reply)
-		fmt.Fprintln(c.Out, reply.Content)
+		fmt.Fprintln(c.Out, reply)
 	}
 }
 
