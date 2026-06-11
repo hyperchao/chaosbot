@@ -10,19 +10,17 @@ import (
 
 // Agent is the boundary the CLI, session, and tests depend on.
 //
-// Chat is the primary entry: pass a full conversation history
-// (system / user / assistant / tool messages in order) and get
-// back the final assistant message. The ReAct loop runs to
-// completion or until ctx is canceled.
-//
-// Run is a one-shot wrapper around Chat for callers that don't
-// maintain their own history (e.g. `chaosbot run "<prompt>"`).
-// Callers that want multi-turn (the REPL, future session
-// persistence) use Chat directly and accumulate history
-// themselves.
+// The agent owns the conversation history: callers (the one-shot
+// `run` subcommand, the REPL, future session persistence) call
+// Run to drive one ReAct turn, and call Reset to start a new
+// conversation. History never leaves the agent — keeping it
+// internal means callers don't have to know about message
+// construction, ordering, or append rules. Phase 06 wraps this
+// in a Session struct (which adds JSON persistence on top) but
+// doesn't change the Agent interface.
 type Agent interface {
-	Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error)
-	Run(ctx context.Context, userInput string) (string, error)
+	Run(ctx context.Context, prompt string) (string, error)
+	Reset()
 }
 
 // Config holds the agent's non-DI runtime config. The chaosbot
@@ -48,10 +46,16 @@ type Config struct {
 // for direct construction; tests in package agent_test build
 // the agent via the di library (per AGENTS.md: "For tests,
 // build a fresh di.New() and register hand-written fakes").
+//
+// History has no di tag: it is per-instance state managed by
+// Run/Reset, not an injected dependency. The di library
+// ignores untagged fields, leaving the zero value ([]Message)
+// in place.
 type reActAgent struct {
 	Provider provider.Provider `di:"type"`
 	Registry *Registry         `di:"type"`
 	Cfg      Config            `di:"type"`
+	History  []provider.Message
 }
 
 // New is the no-arg constructor used by the di library. The
@@ -70,49 +74,48 @@ var ErrMaxSteps = errors.New("agent: max steps reached without final answer")
 // defaultMaxSteps is the fallback when Config.MaxSteps <= 0.
 const defaultMaxSteps = 10
 
-// Run implements Agent as a one-shot wrapper around Chat. It
-// seeds the history with the user's message and returns the
-// assistant's final text content. Callers that want multi-turn
-// (the REPL, session persistence) should use Chat directly and
-// accumulate history themselves.
-func (a *reActAgent) Run(ctx context.Context, userInput string) (string, error) {
-	reply, err := a.Chat(ctx, []provider.Message{NewUserMessage(userInput)})
-	if err != nil {
+// Run implements Agent. It appends the user message to the
+// agent's history and drives the ReAct loop up to MaxSteps
+// times. The final assistant message is appended to history
+// (so subsequent calls see the full exchange) and its text
+// content is returned. The loop terminates when the model
+// produces a final answer (no tool calls), when ctx is
+// canceled, when a provider / Validate error fires, or when
+// MaxSteps is exhausted (in which case ErrMaxSteps is wrapped
+// and returned, and no assistant message is appended).
+func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	return reply.Content, nil
-}
+	a.History = append(a.History, NewUserMessage(prompt))
 
-// Chat implements Agent. It drives the ReAct loop on top of the
-// caller's history and returns the final assistant message.
-// The loop terminates when step returns an assistant message
-// with no tool calls, when ctx is canceled, when a provider /
-// Validate error fires, or when MaxSteps is exhausted (in
-// which case ErrMaxSteps is wrapped and returned).
-func (a *reActAgent) Chat(ctx context.Context, msgs []provider.Message) (provider.Message, error) {
-	if err := ctx.Err(); err != nil {
-		return provider.Message{}, err
-	}
 	max := a.Cfg.MaxSteps
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
-	history := append([]provider.Message(nil), msgs...)
+	var final string
+	var err error
 	for i := 0; i < max; i++ {
-		if err := ctx.Err(); err != nil {
-			return provider.Message{}, err
+		if err = ctx.Err(); err != nil {
+			return "", err
 		}
-		var final string
-		var err error
-		history, final, err = a.step(ctx, history)
+		a.History, final, err = a.step(ctx, a.History)
 		if err != nil {
-			return provider.Message{}, err
+			return "", err
 		}
 		if final != "" {
-			return history[len(history)-1], nil
+			return final, nil
 		}
 	}
-	return provider.Message{}, fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
+	return "", fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
+}
+
+// Reset implements Agent. It drops the in-memory conversation
+// history. The agent's Provider, Registry, and Cfg are
+// unaffected; subsequent Run calls start a fresh conversation
+// (with the same model / system prompt / tools).
+func (a *reActAgent) Reset() {
+	a.History = a.History[:0]
 }
 
 // step performs one ReAct iteration: send history to the

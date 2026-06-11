@@ -163,11 +163,11 @@ func TestRun_ContextCanceled(t *testing.T) {
 	}
 }
 
-// TestChat_MultiTurn_AccumulatesHistory verifies that Chat
-// uses the caller's history as-is (does not seed a new turn)
-// and returns the last assistant message. This is the contract
-// the REPL depends on to maintain in-memory multi-turn state.
-func TestChat_MultiTurn_AccumulatesHistory(t *testing.T) {
+// TestRun_MultiTurn_AccumulatesHistory verifies that consecutive
+// Run calls feed the same agent instance, so the second turn's
+// provider request contains the first turn's user + assistant
+// messages plus the new user message.
+func TestRun_MultiTurn_AccumulatesHistory(t *testing.T) {
 	fp := providerfake.New("multi")
 	fp.Script = []providerfake.Call{
 		{Resp: &provider.Response{Content: "answer-1"}},
@@ -175,41 +175,61 @@ func TestChat_MultiTurn_AccumulatesHistory(t *testing.T) {
 	}
 	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1})
 
-	// Turn 1.
-	reply1, err := a.Chat(context.Background(), []provider.Message{
-		agent.NewUserMessage("q1"),
-	})
+	reply1, err := a.Run(context.Background(), "q1")
 	if err != nil {
-		t.Fatalf("Chat turn 1: %v", err)
+		t.Fatalf("Run turn 1: %v", err)
 	}
-	if reply1.Content != "answer-1" {
-		t.Errorf("turn 1 reply = %q, want %q", reply1.Content, "answer-1")
+	if reply1 != "answer-1" {
+		t.Errorf("turn 1 reply = %q, want %q", reply1, "answer-1")
 	}
 
-	// Turn 2: caller appends assistant's reply1 to its own
-	// history and adds a new user message. The agent must see
-	// the full 3-message history on the next Chat call.
-	history := []provider.Message{
-		agent.NewUserMessage("q1"),
-		reply1,
-		agent.NewUserMessage("q2"),
-	}
-	reply2, err := a.Chat(context.Background(), history)
+	reply2, err := a.Run(context.Background(), "q2")
 	if err != nil {
-		t.Fatalf("Chat turn 2: %v", err)
+		t.Fatalf("Run turn 2: %v", err)
 	}
-	if reply2.Content != "answer-2" {
-		t.Errorf("turn 2 reply = %q, want %q", reply2.Content, "answer-2")
+	if reply2 != "answer-2" {
+		t.Errorf("turn 2 reply = %q, want %q", reply2, "answer-2")
 	}
 
-	// Provider must have seen both full histories.
 	if len(fp.AllReqs) != 2 {
 		t.Fatalf("AllReqs len = %d, want 2", len(fp.AllReqs))
 	}
+	// Turn 1: agent sends just the user message.
 	if got := len(fp.AllReqs[0].Messages); got != 1 {
 		t.Errorf("turn 1 req.Messages len = %d, want 1", got)
 	}
+	// Turn 2: agent sends q1 + a1 + q2 (3 messages).
 	if got := len(fp.AllReqs[1].Messages); got != 3 {
 		t.Errorf("turn 2 req.Messages len = %d, want 3 (q1 + answer-1 + q2)", got)
+	}
+}
+
+// TestRun_Reset_ClearsHistory verifies that Reset drops the
+// in-memory history so the next Run starts a fresh
+// conversation.
+func TestRun_Reset_ClearsHistory(t *testing.T) {
+	fp := providerfake.New("reset")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "answer-1"}},
+		{Resp: &provider.Response{Content: "answer-2"}},
+	}
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1})
+
+	if _, err := a.Run(context.Background(), "q1"); err != nil {
+		t.Fatalf("Run turn 1: %v", err)
+	}
+
+	a.Reset()
+
+	if _, err := a.Run(context.Background(), "q2"); err != nil {
+		t.Fatalf("Run turn 2 after reset: %v", err)
+	}
+
+	if len(fp.AllReqs) != 2 {
+		t.Fatalf("AllReqs len = %d, want 2", len(fp.AllReqs))
+	}
+	// After reset, turn 2 sees only the new user message.
+	if got := len(fp.AllReqs[1].Messages); got != 1 {
+		t.Errorf("turn 2 req.Messages len = %d, want 1 (post-reset)", got)
 	}
 }
