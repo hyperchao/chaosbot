@@ -25,6 +25,7 @@ func buildContainer(cfg *config.Config) *di.DI {
 	c := di.New()
 
 	// Terminal / I/O + version.
+	di.RegisterAliasDI(c, "in", func() io.Reader { return os.Stdin })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return os.Stdout })
 	di.RegisterAliasDI(c, "errout", func() io.Writer { return os.Stderr })
 	di.RegisterAliasDI(c, "version", func() string { return version })

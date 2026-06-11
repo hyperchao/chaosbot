@@ -6,24 +6,29 @@
 package cli
 
 import (
+	"bufio"
 	"context"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
+	"chaosbot/internal/provider"
 )
 
 // CLI is the wired-up command-line surface. All fields are
 // populated by the di library via `di:"type"` or
 // `di:"alias:..."` tags; the composition root (and tests)
 // register the corresponding factory functions. The "out" /
-// "errout" / "version" aliases let us register distinct
-// instances of common types (io.Writer, string) by name.
+// "errout" / "in" / "version" aliases let us register distinct
+// instances of common types (io.Writer, io.Reader, string) by
+// name.
 type CLI struct {
 	Agent   agent.Agent    `di:"type"`
 	Config  *config.Config `di:"type"`
+	In      io.Reader      `di:"alias:in"`
 	Out     io.Writer      `di:"alias:out"`
 	ErrOut  io.Writer      `di:"alias:errout"`
 	Version string         `di:"alias:version"`
@@ -31,11 +36,10 @@ type CLI struct {
 
 // Run dispatches to the named subcommand. Returns the error
 // to be printed + used as the exit code by main. With no args,
-// the REPL would land here in 07-4; for now it returns an
-// error pointing the user at 'run'.
+// starts the REPL.
 func (c *CLI) Run(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("no subcommand (REPL coming in 07-4; use 'chaosbot run \"<prompt>\"')")
+		return c.replCmd()
 	}
 	switch args[0] {
 	case "run":
@@ -91,6 +95,52 @@ func (c *CLI) configCmd(args []string) error {
 func (c *CLI) versionCmd(args []string) error {
 	fmt.Fprintf(c.Out, "chaosbot %s\n", c.Version)
 	return nil
+}
+
+// replCmd drives the read-eval-print loop. The history is kept
+// in process memory and fed into agent.Agent.Chat on each turn.
+// Slash commands: /reset clears history, /exit returns nil,
+// /help prints the available commands. EOF (empty input) is
+// treated like /exit.
+func (c *CLI) replCmd() error {
+	if c.Agent == nil {
+		return errors.New("repl: no agent available (config not loaded)")
+	}
+	fmt.Fprintln(c.Out, "chaosbot REPL — type '/help' for commands, Ctrl-D to exit")
+	history := []provider.Message{}
+	scanner := bufio.NewScanner(c.In)
+	for {
+		fmt.Fprint(c.Out, "> ")
+		if !scanner.Scan() {
+			return nil
+		}
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		switch line {
+		case "/reset":
+			history = history[:0]
+			fmt.Fprintln(c.Out, "history cleared")
+			continue
+		case "/exit", "/quit":
+			return nil
+		case "/help":
+			fmt.Fprintln(c.Out, "commands:")
+			fmt.Fprintln(c.Out, "  /reset    clear conversation history")
+			fmt.Fprintln(c.Out, "  /exit     leave the REPL (alias: /quit)")
+			fmt.Fprintln(c.Out, "  /help     show this message")
+			continue
+		}
+		userMsg := provider.Message{Role: provider.RoleUser, Content: line}
+		reply, err := c.Agent.Chat(context.Background(), append(history, userMsg))
+		if err != nil {
+			fmt.Fprintln(c.ErrOut, "error:", err)
+			continue
+		}
+		history = append(append(history, userMsg), reply)
+		fmt.Fprintln(c.Out, reply.Content)
+	}
 }
 
 // maskKey redacts the middle of an API key for display: the
