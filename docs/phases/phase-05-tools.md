@@ -1,4 +1,4 @@
-# Phase 05 — Built-in tools (5 sub-units)
+# Phase 05 — Built-in tools (6 sub-units)
 
 > The agent's hands. `internal/tools/<area>/<tool>.go` for
 > each tool; `cmd/chaosbot/wire.go` registers them in the
@@ -10,8 +10,8 @@
 | Field | Value |
 |---|---|
 | Phase | `05` |
-| Sub-units | `05-1` … `05-5` |
-| Status | `🟡 in progress` (0/5 sub-units done) |
+| Sub-units | `05-1` … `05-6` |
+| Status | `🟡 in progress` (0/6 sub-units done) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool interface + Registry), Phase 04 (agent loop dispatches to Registry) |
 | Estimated total LOC | ~600 Go (5 tools + 1 shared package, with tests) |
@@ -87,25 +87,34 @@ Each tool has:
 
 ## Sub-units
 
-- `05-1`  `internal/tools/fs/read_file.go` + `write_file.go` + `edit_file.go`
-  in one package `internal/tools/fs/` — pure Go, no exec,
-  no network, ~150 Go LOC. Atomic write via tmp+rename.
-  Unique anchor check on edit. Binary sniff on read.
-- `05-2`  `internal/tools/shell/shell.go` — `os/exec` with
+- `05-1`  `internal/tools/fs/read_file.go` — read a text
+  file with optional `start_line` / `end_line` (1-indexed,
+  inclusive). Pure Go, no exec, no network. NUL-byte sniff
+  on the first 512 bytes rejects binary. Output capped at
+  2000 lines × 256 KB; truncation marker included.
+  ~50 Go LOC.
+- `05-2`  `internal/tools/fs/write_file.go` — atomic write
+  via `os.CreateTemp` + `os.Rename`. Creates parent
+  directories as needed. ~50 Go LOC.
+- `05-3`  `internal/tools/fs/edit_file.go` — replace one
+  occurrence of `old_text` with `new_text`. Strict
+  unique-anchor check: 0 hits → not-found error, ≥ 2 hits
+  → non-unique error. ~50 Go LOC.
+- `05-4`  `internal/tools/shell/shell.go` — `os/exec` with
   `context.WithTimeout`, output capture (stdout+stderr
   merged, ≤ 100 KB cap), exit code surfaced to LLM as part
   of the tool result. ~80 Go LOC.
-- `05-3`  `internal/tools/web/web.go` — `net/http` GET with
+- `05-5`  `internal/tools/web/web.go` — `net/http` GET with
   `Content-Length` check + `io.LimitReader(1MB)`, then
   `html.NewTokenizer` to extract visible text (skip
   `<script>`/`<style>` blocks), truncate to 50 KB. ~100 Go
   LOC + 1 new direct dep.
-- `05-4`  wire all 5 into `Registry` from `cmd/chaosbot/wire.go`;
-  smoke-test each with a real LLM through the REPL.
-- `05-5`  `/tools` slash command (slated for Phase 05 by
-  SPEC §3): print `Registry.Names()` and per-tool
-  description. Pairs with the table-driven REPL slash-command
-  refactor deferred to "add this when we hit 5+ commands".
+- `05-6`  wire all 5 into `Registry` from `cmd/chaosbot/wire.go`;
+  smoke-test each with a real LLM through the REPL. The
+  `/tools` slash command is **deferred** to when REPL hits
+  5+ slash commands (per the table-driven refactor note in
+  `phase-07-cli-repl.md`); for MVP, `Registry.Names()` is
+  inspectable via the `version`/`bench` debug paths.
 
 ## Test points
 
@@ -117,24 +126,23 @@ Each tool has:
 | `TestReadFile_NotFound_Propagates` | 05-1 | unit |
 | `TestReadFile_LineCap` | 05-1 | unit (2000-line file) |
 | `TestReadFile_ByteCap` | 05-1 | unit (256 KB file) |
-| `TestWriteFile_Atomic` | 05-1 | unit (overwrite existing) |
-| `TestWriteFile_Permissions` | 05-1 | unit (0600 on Linux) |
-| `TestEditFile_Unique_Replaces` | 05-1 | unit |
-| `TestEditFile_NonUnique_Errors` | 05-1 | unit |
-| `TestEditFile_NotFound_Anchor_Errors` | 05-1 | unit |
-| `TestShell_Runs` | 05-2 | unit (echo hello) |
-| `TestShell_Timeout` | 05-2 | unit (`sleep 5`, ctx 100ms) |
-| `TestShell_Truncates` | 05-2 | unit (`yes`, 200 KB) |
-| `TestShell_NonZeroExit_Surfaces` | 05-2 | unit (`false`) |
-| `TestShell_StderrMerged` | 05-2 | unit |
-| `TestWeb_Fetches` | 05-3 | unit (httptest) |
-| `TestWeb_StripsHTML` | 05-3 | unit (assert no `<tag>` in output) |
-| `TestWeb_StripsScript` | 05-3 | unit |
-| `TestWeb_LimitsTo1MB` | 05-3 | unit (serve 2 MB) |
-| `TestWeb_TruncatesTo50KB` | 05-3 | unit (serve 200 KB body) |
-| `TestWeb_4xx5xx_Errors` | 05-3 | unit (httptest 404) |
-| `TestRegistry_All5_Registered` | 05-4 | integration (build real container) |
-| `TestREPL_ToolsSlash` | 05-5 | cli (programmed input) |
+| `TestWriteFile_Atomic` | 05-2 | unit (overwrite existing) |
+| `TestWriteFile_Permissions` | 05-2 | unit (0600 on Linux) |
+| `TestEditFile_Unique_Replaces` | 05-3 | unit |
+| `TestEditFile_NonUnique_Errors` | 05-3 | unit |
+| `TestEditFile_NotFound_Anchor_Errors` | 05-3 | unit |
+| `TestShell_Runs` | 05-4 | unit (echo hello) |
+| `TestShell_Timeout` | 05-4 | unit (`sleep 5`, ctx 100ms) |
+| `TestShell_Truncates` | 05-4 | unit (`yes`, 200 KB) |
+| `TestShell_NonZeroExit_Surfaces` | 05-4 | unit (`false`) |
+| `TestShell_StderrMerged` | 05-4 | unit |
+| `TestWeb_Fetches` | 05-5 | unit (httptest) |
+| `TestWeb_StripsHTML` | 05-5 | unit (assert no `<tag>` in output) |
+| `TestWeb_StripsScript` | 05-5 | unit |
+| `TestWeb_LimitsTo1MB` | 05-5 | unit (serve 2 MB) |
+| `TestWeb_TruncatesTo50KB` | 05-5 | unit (serve 200 KB body) |
+| `TestWeb_4xx5xx_Errors` | 05-5 | unit (httptest 404) |
+| `TestRegistry_All5_Registered` | 05-6 | integration (build real container) |
 
 ## Tool specs (the JSON sent to the LLM)
 
@@ -232,10 +240,10 @@ parameters:
   command. Without the marker, the LLM might not realize
   output was cut.
 - **5 tools at once is a lot to test.** Splitting into
-  sub-units (05-1, 05-2, 05-3, 05-4, 05-5) keeps each
+  sub-units (05-1, 05-2, 05-3, 05-4, 05-5, 05-6) keeps each
   commit reviewable.
 - **New direct dep** (`golang.org/x/net/html`) lands in
-  05-3. ADR-0001 needs an update line.
+  05-5. ADR-0001 needs an update line.
 
 ## Performance impact
 
