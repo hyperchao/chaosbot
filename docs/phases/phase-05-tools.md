@@ -11,7 +11,7 @@
 |---|---|
 | Phase | `05` |
 | Sub-units | `05-1` … `05-6` |
-| Status | `🟡 in progress` (0/6 sub-units done) |
+| Status | `🟡 in progress` (1/6 sub-units done) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool interface + Registry), Phase 04 (agent loop dispatches to Registry) |
 | Estimated total LOC | ~600 Go (5 tools + 1 shared package, with tests) |
@@ -271,3 +271,96 @@ parameters:
 ## 实现笔记
 
 > Filled as each sub-unit lands.
+
+### 05-1 — `tools/fs/read_file.go`
+
+**新增文件**:
+- `internal/tools/fs/read_file.go` **158 行**:`ReadFileTool`
+  struct(无状态,`struct{}`)+ 4 个 `agent.Tool` 方法 + 内部
+  helpers (`sniffBinary` / `renderWindow`)+ `readFileArgs`
+  反序列化结构。
+- `internal/tools/fs/read_file_test.go` **180 行**:
+  6 个表驱动测 + 编译期断言
+  `var _ agent.Tool = (*fstools.ReadFileTool)(nil)` +
+  `mustArgs` / `min` helpers。`package fs_test`(外部 test 包);
+  `chaosbot/internal/tools/fs` 用 alias `fstools` 导入避免
+  与 `io/fs` 重名。
+
+**关键实现选择**:
+- **`bufio.Scanner` max token = `readFileMaxBytes` (256 KB)**:
+  `scanner.Buffer(make([]byte, 64*1024), readFileMaxBytes)`。
+  默认 64 KB token 限制在长 JSON / 大 YAML 单行会爆;提到
+  跟 output cap 同值 256 KB。**对称设计**:单行 > 256 KB
+  直接 `bufio.ErrTooLong` 失败(LLM 改用 `shell + head` /
+  `shell + sed -n`),而不是写到 output cap 截断后留下
+  `"1\t<256 KB 前缀>\n... [truncated] ..."` 这种"line 编号
+  在但内容被截"的无用 payload。
+- **byte cap 触发时整段重写**:`out.Bytes()[:256*1024]` 然后
+  `out.Reset()` + `Write(truncated)` + 追加 marker。比
+  `Truncate(256*1024)` 更明确意图;后者会留底层数组没释放
+  一次。
+- **line cap 计数 `remaining`**:写满 2000 行触发 cap 时,
+  内层 for 继续 `scanner.Scan()` 数剩下的行数,marker 里
+  写 "file has N more lines"。一次 O(N) 扫描,N ≤ ∞ 但
+  调用方拿到 marker 知道去哪取 → MVP OK;真要追求极致
+  可换成 `io.LimitReader` + 两遍,不值。
+- **错误前缀 `read_file:`**:所有 Go 错误统一 wrap 前缀
+  (validation + binary sniff);`*os.PathError` 例外,
+  按 spec 透传,LLM 看到 "no such file or directory"
+  这样的标准错误更易处理。
+- **`f.Seek(0, io.SeekStart)`**:`sniffBinary` 读完后回到
+  文件头,`renderWindow` 从头扫。比关掉重开省 1 个 fd
+  (在 Linux 上还是同 fd,只是 offset 重置)。
+
+**测试覆盖**(6 个,全 PASS):
+- `TestReadFile_Whole` — 3 行文件,默认窗口,验证
+  `"1\thello\n2\tworld\n3\tfoo\n"`。
+- `TestReadFile_LineRange` — 5 行文件,`start_line=2,
+  end_line=3`,验证只返 2-3 行且 line 编号对。
+- `TestReadFile_Binary_Rejects` — 写 `"abc\x00def"`
+  (NUL 在 512 字节 sniff 窗口内),验证 Go error 包含
+  "binary"。
+- `TestReadFile_NotFound_Propagates` — 路径不存在,
+  `errors.Is(err, os.ErrNotExist)`。**用 `os.ErrNotExist`
+  而非 `io/fs.ErrNotExist`**,两者是 Go 1.16+ 的 alias,
+  但 `os` 是本项目已用包,避免新增 import。
+- `TestReadFile_LineCap` — 2500 行文件,显式传 `end_line=999999`,
+  验证输出 2000 + 1 marker 行(共 2001),marker 包含
+  "2000-line cap reached" 和 "500 more"。
+- `TestReadFile_LongLine_FailsFast` — 单行 300 KB(无 newline),
+  验证 Go error 且 `errors.Is(err, bufio.ErrTooLong)`。**取代
+  原始 spec 的 `TestReadFile_ByteCap`** — symmetry 设计下
+  scanner max = output cap,超长单行 fail-fast 不再走"output
+  截断"路径(那条路径现在只对"多行总和超 cap"有意义,日常
+  2000 行 × 平均 200 字节 = 400 KB 才会触发,典型代码文件
+  遇不到)。
+
+**Spec 偏差**:
+- 删除了"## 05-1 spec"独立节(impl 阶段草稿):review 时
+  指出 phase-05-tools.md 现有的 Sub-units 段 + Test points
+  表 + Tool specs 段 + Risks 段 + Performance impact 段已经
+  覆盖了 SDD 要求的 "goal, public API/interface, data
+  structures, test points, risks, performance impact"
+  全部 6 要素,只是粒度 phase-level 而非 sub-unit-level。
+  05-1 sub-unit 的细节放在本实现笔记里。
+- `start_line` / `end_line` validation 反复改:初版按 spec
+  JSON Schema `minimum: 1` 严拒 ≤0;第二版放宽 `== 0` 走
+  default 跟 JSON Schema 矛盾;最终版用 `*int` 区分
+  "省略"(走 default)和"传了 ≤0"(strict error),
+  spec JSON Schema 不动。
+- `bufio.Scanner` max token 跟 `readFileMaxBytes` 同步 256 KB
+  (spec 没说,impl 时 review 指出原始 1 MiB × 256 KB 不对称
+  会留下"line 编号在但内容被截"的无用 payload,改为
+  fail-fast)。
+
+**Layering**:
+- `internal/tools/fs/read_file.go` import `bufio` / `bytes`
+  / `context` / `encoding/json` / `errors` / `fmt` / `io`
+  / `os`,全部 stdlib。
+- 不 import `internal/agent`(避免 tools→agent 反向依赖;
+  编译期断言在 test 文件做)。
+- 不 import `cmd/chaosbot/*`(符合 phase-05 "Layering" 段)。
+
+**自验**:`make test` 8/8 包 PASS(新增 `internal/tools/fs`
+8 测,既有 6 包 31 测不变);`make build` 通过;`make lint`
+clean;`gofmt -l .` clean。

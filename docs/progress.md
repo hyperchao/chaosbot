@@ -33,7 +33,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 04-1  | agent.Message 类型 | ✅ | 06-03 | 06-03 | 27 | 3/3 | 复用 `provider.Message`,3 构造函数;见 phase-04 实现笔记 |
 | 04-2  | agent loop 单步逻辑 | ✅ | 06-03 | 06-03 | 68 | 6/6 | `step` 改 `step(ctx, history)`,无 userMsg;bug 抓 tool error 必须嵌 message;fake 抽到 `provider/fake/` |
 | 04-3  | Agent struct + 终止条件 + 集成测 | ✅ | 06-03 | 06-03 | ~80 | 4/4 | `Run` + `MaxSteps` + `ErrMaxSteps`;fake 扩 Script/AllReqs 队列;测合并到 4 个 |
-| 05-1  | tools/fs.read_file | ⬜ | | | | | |
+| 05-1  | tools/fs.read_file | ✅ | 06-14 | 06-14 | ~340 | 6/6 | `internal/tools/fs/read_file.go` 158 + test 180;`bufio.Scanner` token 1 MiB;`cat -n` 输出;`*os.PathError` 透传;binary sniff 512 B;见 phase-05 实现笔记 05-1 |
 | 05-2  | tools/fs.write_file | ⬜ | | | | | |
 | 05-3  | tools/fs.edit_file | ⬜ | | | | | |
 | 05-4  | tools/shell.exec | ⬜ | | | | | |
