@@ -14,6 +14,7 @@ import (
 	"chaosbot/internal/provider"
 	"chaosbot/internal/provider/openai"
 	"chaosbot/internal/tools/fs"
+	"chaosbot/internal/tools/shell"
 )
 
 // buildContainer wires the di container with everything cli.CLI
@@ -58,6 +59,7 @@ func buildContainer(cfg *config.Config) *di.DI {
 		r.Register(&fs.ReadFileTool{})
 		r.Register(&fs.WriteFileTool{})
 		r.Register(&fs.EditFileTool{})
+		r.Register(&shell.ShellTool{})
 		return r
 	})
 	di.RegisterDI(c, func() agent.Config {
