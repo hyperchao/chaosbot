@@ -11,7 +11,7 @@
 |---|---|
 | Phase | `05` |
 | Sub-units | `05-1` … `05-6` |
-| Status | `🟡 in progress` (1/6 sub-units done) |
+| Status | `✅ complete` (6/6 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool interface + Registry), Phase 04 (agent loop dispatches to Registry) |
 | Estimated total LOC | ~600 Go (5 tools + 1 shared package, with tests) |
@@ -364,3 +364,137 @@ parameters:
 **自验**:`make test` 8/8 包 PASS(新增 `internal/tools/fs`
 8 测,既有 6 包 31 测不变);`make build` 通过;`make lint`
 clean;`gofmt -l .` clean。
+
+### 05-2 — `tools/fs/write_file.go`
+
+Atomic via `tmp+fsync+rename`. Parent directory
+`MkdirAll(dir, 0o755)` on demand. Tmp file is
+`path + ".tmp"` (fixed name, no random suffix) with
+`0o600`; on any failure between Create and Rename the
+tmp file is removed. *os.PathError propagates verbatim so
+the LLM sees "no such file or directory" / "permission
+denied" in the tool-message stream.
+
+Eight tests cover: create new file under a non-existent
+parent (parent auto-created), overwrite existing file,
+no `.tmp` leftover on success, original file intact when
+the parent is a file (MkdirAll fails before any write),
+0600 permissions on Linux (skipped on Windows), missing
+'path' arg, malformed JSON args, pre-canceled context.
+
+### 05-3 — `tools/fs/edit_file.go`
+
+Strict unique-anchor check: zero or many matches both
+fail without modifying the file. Error message includes
+the match count and the first five byte offsets so the
+LLM can grow the anchor to disambiguate without
+re-reading the whole file. Empty `old_text` is rejected
+(empty anchor matches every position, equivalent to
+infinite matches). Empty `new_text` is allowed and
+deletes the anchor. Reuses `writeFileAtomic` so a
+mid-edit crash leaves the original file intact.
+
+Eight tests cover: unique single-line replace, multi-line
+anchor, missing anchor (file unchanged), non-unique
+anchor with offset reporting, empty old_text rejection,
+empty new_text deletion, missing path arg, pre-canceled
+context.
+
+### 05-4 — `tools/shell/shell.go`
+
+`/bin/sh -c` invocation, stdout and stderr merged into a
+single `cappedWriter` (100 KB cap with truncation marker).
+Default timeout 30 s, max 600 s. ctx cancellation
+propagates to the child via `exec.CommandContext`, which
+SIGKILLs the process when the deadline fires or the
+parent ctx is cancelled. Exit codes are surfaced as part
+of the tool result (not returned as Go errors) so the
+LLM can see "exit 1" or "exit 127" and react; non-zero
+exits are not errors from the tool's perspective — only
+child-kill events are. Reply format:
+`"<output><truncation_marker>\n--- exit <N>"`.
+
+Ten tests cover: echo success, non-zero exit code,
+merged stderr, timeout kills child (asserts elapsed < 3 s
+for `sleep 5` with 1 s timeout), truncation at 100 KB
+with marker (uses `head -c 200000` so the child exits
+cleanly and the truncation path is exercised, not the
+timeout path), invalid/negative timeout, empty command,
+pre-canceled context, command-not-found (exit 127).
+
+### 05-5 — `tools/web/web.go`
+
+HTTP GET (http/https only) with body capped at 1 MB via
+`io.LimitReader`. Body is run through the
+`golang.org/x/net/html` tokenizer to extract visible
+text: `<script>` and `<style>` blocks (plus `<noscript>`,
+`<head>`, `<template>`) are skipped via depth tracking,
+tags are dropped, and HTML entities are decoded by the
+tokenizer. Block-level elements (p, div, h1..h6, li, tr,
+section, article, etc.) emit newlines so the LLM gets a
+readable layout. Output is capped at 50 KB; overflow
+appends a truncation marker. The stdlib `*http.Client`
+is reused (a `WebFetchTool` is constructed once per
+agent) so a single agent session does not exhaust
+ephemeral ports on Linux.
+
+Nine tests cover: basic HTML fetch + tag stripping,
+script/style block exclusion, scheme allow-list
+(file/ftp/javascript/data all rejected), 4xx/5xx error
+surfacing, 1 MB body cap (server sends 2 MB), 50 KB
+output cap with truncation marker (5k paragraphs × 40
+bytes), empty url, malformed JSON args, pre-canceled
+context (httptest server hangs).
+
+**go.mod**: added `golang.org/x/net v0.43.0` as a direct
+dep (4th, within 8 budget). v0.43.0 is the newest
+release that still compiles under `go 1.24`; newer
+versions require 1.25 and would force a toolchain bump.
+The `html` and `html/atom` sub-packages are stable, no
+API churn in years. 0 transitive sub-deps beyond x/net
+itself.
+
+### 05-6 — Default tool registration
+
+No additional code: each tool commit (05-1 through 05-5)
+incrementally added its `r.Register(...)` call to the
+`Registry` factory closure in `cmd/chaosbot/wire.go`.
+The final closure registers all five:
+`ReadFileTool`, `WriteFileTool`, `EditFileTool`,
+`ShellTool`, `NewWebFetchTool()`. A REPL smoke test
+asks the LLM to list its tools and gets back all five
+names in alphabetical order (edit_file, read_file,
+shell, web_fetch, write_file), confirming the wire
+format carries the full tool list to the provider.
+
+## Phase 05 summary
+
+Five built-in tools shipped in 6 sub-units. Total Go
+LOC: 1,316 (207 tool impl + 297 tests for fs, 154+177
+for shell, 208+203 for web, plus wire.go and go.mod
+changes). Direct dep count 3 → 4 (golang.org/x/net
+v0.43.0). All `make test`, `make lint`, `gofmt -l .`
+clean; REPL smoke confirms all five tools visible to
+the LLM and invokable end-to-end.
+
+LLM-driven code review (after a multi-tool session
+reading agent.go + write_file.go) flagged several
+real issues deferred to Phase 06+:
+- **write_file path sandbox**: no allow-list, LLM can
+  be tricked into writing `~/.ssh/authorized_keys` or
+  `/etc/cron.d/*`. Should add a workspace root
+  (already a config field, currently advisory) and
+  enforce it in the tool.
+- **write_file size cap**: no `MaxBytes`; runaway LLM
+  could fill the disk.
+- **agent.Run partial history on failure**: the user
+  message is appended before the loop, so a ctx
+  cancel mid-loop leaves an orphan user message in
+  history. Should either roll back the append on
+  error or document "Reset after failure".
+- **`Registry.Specs()` called per step**: minor perf
+  concern if Specs() ever becomes non-trivial.
+- **Concurrent Run calls**: `History` is not mutex-
+  protected; currently safe only because the agent
+  loop is single-threaded (spec 04), but this should
+  be either guarded or explicitly documented.
