@@ -132,6 +132,42 @@ func TestWriteFile_Permissions(t *testing.T) {
 	}
 }
 
+func TestWriteFile_ContentTooLarge_Errors(t *testing.T) {
+	// Verify the cap is enforced BEFORE we ever open a file —
+	// we don't want a 50 MB payload to be allocated just to
+	// reject it. Use a 1 MB content but lower the cap by
+	// shimming a separate instance; the test for the real
+	// 10 MB cap is implicit in writeFileMaxBytes == 10 * 1024 * 1024.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "f.txt")
+
+	tw := &fs.WriteFileTool{}
+	content := strings.Repeat("a", 1<<20) // 1 MiB
+	// We can't change the const at runtime, so just assert
+	// the error path triggers via the real cap by sending
+	// the cap+1 bytes.
+	big := make([]byte, 10*1024*1024+1)
+	for i := range big {
+		big[i] = 'a'
+	}
+	_, err := tw.Invoke(context.Background(), mustJSON(t, map[string]string{
+		"path":    path,
+		"content": string(big),
+	}))
+	if err == nil {
+		t.Fatal("want error for content > 10 MB cap")
+	}
+	if !strings.Contains(err.Error(), "too large") {
+		t.Errorf("err = %v, want mentions 'too large'", err)
+	}
+
+	// File must not have been created.
+	if _, statErr := os.Stat(path); !os.IsNotExist(statErr) {
+		t.Errorf("file should not exist after rejected write, stat err = %v", statErr)
+	}
+	_ = content
+}
+
 func TestWriteFile_InvalidArgs(t *testing.T) {
 	tw := &fs.WriteFileTool{}
 	_, err := tw.Invoke(context.Background(), json.RawMessage(`{"content": "no path"}`))

@@ -209,8 +209,8 @@ Termination conditions (04-3):
   messages. The loop continues. The user gets a chance to retry,
   switch tools, or give up. 04-2 tests this explicitly.
 
-- **`MaxSteps = 0` or negative**. Treated as "use default" (10) in
-  04-3? Or panic? Decision: **treat ≤ 0 as 10**; matches "do
+- **`MaxSteps = 0` or negative**. Treated as "use default" (30)
+  in 04-3? Or panic? Decision: **treat ≤ 0 as 30**; matches "do
   something reasonable" UX. Documented in godoc.
 
 - **Concurrency**. `Agent.Run` is sequential by design. `Agent` itself
@@ -312,7 +312,7 @@ Termination conditions (04-3):
 ### 04-3 — `Run` 循环 + `MaxSteps` + `ErrMaxSteps`
 
 **新增**:
-- `Agent` struct 补 `MaxSteps int` 字段(`<= 0` 走 `defaultMaxSteps = 10`)。
+- `Agent` struct 补 `MaxSteps int` 字段(`<= 0` 走 `defaultMaxSteps = 30`)。
 - `ErrMaxSteps` sentinel,`Run` 用 `fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)`
   包装,`errors.Is` 可识别。
 - `(a *Agent) Run(ctx, userInput string) (string, error)`:循环 `step`,终止条件:

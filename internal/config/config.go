@@ -115,7 +115,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Provider.Timeout = 60 * time.Second
 	}
 	if cfg.MaxSteps == 0 {
-		cfg.MaxSteps = 10
+		cfg.MaxSteps = 30
 	}
 	if cfg.Temperature == 0 {
 		cfg.Temperature = 0.7

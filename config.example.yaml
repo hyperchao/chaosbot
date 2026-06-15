@@ -35,8 +35,8 @@ provider:
 
 # Agent loop budget. Loop terminates when the model produces a
 # final answer (no tool calls) or after this many iterations.
-# Default 10.
-# max_steps: 10
+# Default 30.
+# max_steps: 30
 
 # Workspace root for file-system tools (Phase 05). Reads and
 # writes are confined to this directory.

@@ -72,7 +72,11 @@ func New() Agent {
 var ErrMaxSteps = errors.New("agent: max steps reached without final answer")
 
 // defaultMaxSteps is the fallback when Config.MaxSteps <= 0.
-const defaultMaxSteps = 10
+// Set generously enough for multi-tool programming tasks
+// (read N files + edit + test + commit usually lands in
+// 15-25 steps). Real workloads that exceed this should
+// configure the value explicitly in the chaosbot config.
+const defaultMaxSteps = 30
 
 // Run implements Agent. It drives the ReAct loop up to
 // MaxSteps times on top of the agent's history. The user

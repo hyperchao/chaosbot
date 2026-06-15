@@ -36,8 +36,8 @@ func TestLoad_FromEnv_APIKey(t *testing.T) {
 	if cfg.Provider.Timeout != 60*time.Second {
 		t.Errorf("Timeout = %v, want 60s", cfg.Provider.Timeout)
 	}
-	if cfg.MaxSteps != 10 {
-		t.Errorf("MaxSteps = %d, want 10", cfg.MaxSteps)
+	if cfg.MaxSteps != 30 {
+		t.Errorf("MaxSteps = %d, want 30", cfg.MaxSteps)
 	}
 	if cfg.Temperature != 0.7 {
 		t.Errorf("Temperature = %v, want default 0.7", cfg.Temperature)

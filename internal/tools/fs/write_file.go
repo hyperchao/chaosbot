@@ -9,12 +9,22 @@ import (
 	"path/filepath"
 )
 
+// writeFileMaxBytes caps a single write at 10 MB. This is
+// well above any plausible code or config file an LLM would
+// produce in one call (typical code files are < 1 MB) but
+// bounds memory: a single WriteFileTool.Invoke peak is
+// roughly 2x the content size (tmp file + final file),
+// staying safely under the per-Run 80 MB cap. Users wanting
+// larger writes should use shell + heredoc.
+const writeFileMaxBytes = 10 * 1024 * 1024
+
 // WriteFileTool writes content to a file, replacing any existing
 // content. See docs/phases/phase-05-tools.md §05-2 for the
 // contract: atomic via tmp+rename, parent directories created
 // on demand, 0600 permissions, *os.PathError propagates verbatim
 // (so the LLM sees "no such file or directory" / "permission
-// denied" in tool-message form).
+// denied" in tool-message form), single-call content size
+// capped at 10 MB to bound memory.
 type WriteFileTool struct{}
 
 // Name implements agent.Tool.
@@ -26,7 +36,8 @@ func (t *WriteFileTool) Description() string {
 		"content. Atomic via tmp+rename: a crash mid-write " +
 		"leaves the previous file intact. Parent directories " +
 		"are created as needed. Always overwrites (no append " +
-		"mode); use edit_file for in-place patches."
+		"mode); use edit_file for in-place patches. Capped at " +
+		"10 MB per call; for larger files use shell + heredoc."
 }
 
 // Parameters implements agent.Tool.
@@ -53,6 +64,10 @@ func (t *WriteFileTool) Invoke(ctx context.Context, args json.RawMessage) (strin
 	}
 	if a.Path == "" {
 		return "", errors.New("write_file: path is required")
+	}
+	if len(a.Content) > writeFileMaxBytes {
+		return "", fmt.Errorf("write_file: content too large (%d bytes, max %d); split into smaller writes or use shell + heredoc",
+			len(a.Content), writeFileMaxBytes)
 	}
 	if err := writeFileAtomic(a.Path, []byte(a.Content)); err != nil {
 		return "", err
