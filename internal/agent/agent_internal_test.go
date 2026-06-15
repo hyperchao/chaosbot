@@ -197,3 +197,70 @@ func TestStep_PassesSystemAndToolsToProvider(t *testing.T) {
 		t.Errorf("LastReq.Messages = %+v, want [user 'hi']", fp.LastReq.Messages)
 	}
 }
+
+// TestRun_ContextCanceled_DoesNotMutateHistory verifies that
+// a Run that bails on a pre-canceled context leaves a.History
+// untouched — the candidate user message is built on a
+// local slice, never assigned back to a.History, so the
+// next Run starts from the same point.
+func TestRun_ContextCanceled_DoesNotMutateHistory(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	// Seed a successful Run so a.History is non-empty.
+	prevHistory := []provider.Message{NewUserMessage("prior"), NewAssistantMessage("ok", nil)}
+	a.History = append([]provider.Message(nil), prevHistory...)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := a.Run(ctx, "this should not stick")
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("err = %v, want context.Canceled", err)
+	}
+	if len(a.History) != len(prevHistory) {
+		t.Errorf("len(a.History) = %d, want %d (canceled Run must not append)", len(a.History), len(prevHistory))
+	}
+	for i := range prevHistory {
+		if a.History[i].Content != prevHistory[i].Content {
+			t.Errorf("a.History[%d] mutated: got %q, want %q", i, a.History[i].Content, prevHistory[i].Content)
+		}
+	}
+}
+
+// TestRun_MaxSteps_DoesNotMutateHistory verifies that
+// exhausting MaxSteps without a final answer leaves
+// a.History untouched. The provider keeps emitting tool
+// calls, the loop runs out of budget, and the agent must
+// NOT commit the user message.
+func TestRun_MaxSteps_DoesNotMutateHistory(t *testing.T) {
+	a, fp := newTestAgent(t, map[string]string{"echo": "x"})
+	toolCall := providerfake.Call{Resp: &provider.Response{
+		ToolCalls: []provider.ToolCall{{ID: "1", Name: "echo", Arguments: json.RawMessage(`{}`)}},
+	}}
+	fp.Script = []providerfake.Call{toolCall, toolCall, toolCall}
+	a.Cfg.MaxSteps = 3
+
+	prevLen := len(a.History)
+	_, err := a.Run(context.Background(), "hi")
+	if !errors.Is(err, ErrMaxSteps) {
+		t.Errorf("err = %v, want wraps ErrMaxSteps", err)
+	}
+	if len(a.History) != prevLen {
+		t.Errorf("len(a.History) = %d, want %d (failed Run must not append)", len(a.History), prevLen)
+	}
+}
+
+// TestRun_ProviderError_DoesNotMutateHistory verifies that
+// a provider Chat error in the very first step leaves
+// a.History untouched.
+func TestRun_ProviderError_DoesNotMutateHistory(t *testing.T) {
+	a, fp := newTestAgent(t, nil)
+	fp.NextErr = errors.New("llm down")
+
+	prevLen := len(a.History)
+	_, err := a.Run(context.Background(), "hi")
+	if err == nil {
+		t.Fatal("want error when provider fails")
+	}
+	if len(a.History) != prevLen {
+		t.Errorf("len(a.History) = %d, want %d (failed Run must not append)", len(a.History), prevLen)
+	}
+}

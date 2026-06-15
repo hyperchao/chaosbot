@@ -74,20 +74,29 @@ var ErrMaxSteps = errors.New("agent: max steps reached without final answer")
 // defaultMaxSteps is the fallback when Config.MaxSteps <= 0.
 const defaultMaxSteps = 10
 
-// Run implements Agent. It appends the user message to the
-// agent's history and drives the ReAct loop up to MaxSteps
-// times. The final assistant message is appended to history
-// (so subsequent calls see the full exchange) and its text
-// content is returned. The loop terminates when the model
-// produces a final answer (no tool calls), when ctx is
-// canceled, when a provider / Validate error fires, or when
-// MaxSteps is exhausted (in which case ErrMaxSteps is wrapped
-// and returned, and no assistant message is appended).
+// Run implements Agent. It drives the ReAct loop up to
+// MaxSteps times on top of the agent's history. The user
+// message is added to a local candidate slice; only when
+// the run completes successfully (the model produced a
+// final answer) is the candidate committed back to
+// a.History. A failed run — ctx cancel, provider /
+// Validate error, or MaxSteps exhausted — leaves a.History
+// untouched, so the next Run starts from the same point.
+// The loop terminates when the model produces a final
+// answer (no tool calls), when ctx is canceled, when a
+// provider / Validate error fires, or when MaxSteps is
+// exhausted (in which case ErrMaxSteps is wrapped and
+// returned, and no assistant message is appended).
 func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	a.History = append(a.History, NewUserMessage(prompt))
+	// Build a candidate history with the new user message.
+	// We do NOT mutate a.History until the run succeeds.
+	// append() may or may not allocate a new backing array;
+	// either way, a.History is left unchanged because we
+	// never assign back until the final answer arrives.
+	history := append(a.History, NewUserMessage(prompt))
 
 	max := a.Cfg.MaxSteps
 	if max <= 0 {
@@ -99,11 +108,12 @@ func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 		if err = ctx.Err(); err != nil {
 			return "", err
 		}
-		a.History, final, err = a.step(ctx, a.History)
+		history, final, err = a.step(ctx, history)
 		if err != nil {
 			return "", err
 		}
 		if final != "" {
+			a.History = history
 			return final, nil
 		}
 	}
