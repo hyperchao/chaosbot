@@ -56,6 +56,7 @@ func buildContainer(cfg *config.Config) *di.DI {
 	di.RegisterDI(c, func() *agent.Registry {
 		r := agent.NewRegistry()
 		r.Register(&fs.ReadFileTool{})
+		r.Register(&fs.WriteFileTool{})
 		return r
 	})
 	di.RegisterDI(c, func() agent.Config {
