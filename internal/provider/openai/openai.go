@@ -105,7 +105,7 @@ func toOpenAIRequest(req provider.Request) (openaipkg.ChatCompletionRequest, err
 		for i, t := range req.Tools {
 			oaiReq.Tools[i] = openaipkg.Tool{
 				Type: openaipkg.ToolTypeFunction,
-				Function: &openaipkg.FunctionDefine{
+				Function: &openaipkg.FunctionDefinition{
 					Name:        t.Name,
 					Description: t.Description,
 					Parameters:  t.Parameters,

@@ -13,6 +13,7 @@ import (
 	"chaosbot/internal/config"
 	"chaosbot/internal/provider"
 	"chaosbot/internal/provider/openai"
+	"chaosbot/internal/tools/fs"
 )
 
 // buildContainer wires the di container with everything cli.CLI
@@ -49,7 +50,14 @@ func buildContainer(cfg *config.Config) *di.DI {
 
 	// Agent. Cfg translates *config.Config into the agent's
 	// own DTO; missing config falls back to the zero value.
-	di.RegisterDI(c, agent.NewRegistry)
+	// The Registry is built with the default tool set here;
+	// future phases add more tools (write_file, edit_file,
+	// shell, web_fetch) to this same factory closure.
+	di.RegisterDI(c, func() *agent.Registry {
+		r := agent.NewRegistry()
+		r.Register(&fs.ReadFileTool{})
+		return r
+	})
 	di.RegisterDI(c, func() agent.Config {
 		if cfg == nil {
 			return agent.Config{}
