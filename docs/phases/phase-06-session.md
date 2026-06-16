@@ -49,7 +49,7 @@ type Store interface {
 }
 ```
 
-### File format: NDJSON (JSON Lines)
+### File format: JSONL (JSON Lines)
 
 Each line is one JSON-encoded `provider.Message`. No array wrapping,
 no commas, no trailing newline on the last line.
@@ -72,7 +72,7 @@ Advantages over full JSON:
 ### session.FileStore (concrete impl)
 
 ```go
-// FileStore persists sessions as NDJSON files in a directory.
+// FileStore persists sessions as JSONL files in a directory.
 type FileStore struct {
     dir string // e.g. ~/.chaosbot/sessions/
 }
@@ -81,7 +81,7 @@ type FileStore struct {
 File layout:
 ```
 ~/.chaosbot/sessions/
-  <id>.ndjson     # one JSON message per line
+  <id>.jsonl     # one JSON message per line
 ```
 
 ### Append implementation
@@ -171,7 +171,7 @@ Files: `internal/session/store.go`, `internal/session/filestore.go`
 - `FileStore` struct + `NewFileStore` constructor
 - `Append`: `O_APPEND|O_CREATE`, `bufio.Writer`, fsync; caller passes only new messages
 - `Load`: `bufio.Scanner` line-by-line JSON decode, 1 MB buffer
-- `List`: `filepath.Glob("*.ndjson")`, sort by mtime
+- `List`: `filepath.Glob("*.jsonl")`, sort by mtime
 - `Delete`: `os.Remove` (idempotent)
 - `NewID()` helper: `<date>-<random4>`
 
@@ -226,7 +226,7 @@ These live in `cli/cli_test.go` and test the REPL + session interaction:
 ## Risks
 
 - **Session file growth**: a 30-step session with large tool outputs
-  can produce a ~1 MB NDJSON file. Acceptable for MVP; compression is
+  can produce a ~1 MB JSONL file. Acceptable for MVP; compression is
   a follow-up.
 - **ID collision**: `date-random4` has ~65K combinations per day.
   Collisions overwrite silently. Acceptable for single-user MVP.
@@ -242,3 +242,32 @@ These live in `cli/cli_test.go` and test the REPL + session interaction:
 - Session export / import
 - Multi-user session isolation
 - Summary persistence (deferred to 04-4c implementation)
+
+---
+
+### 实现笔记 06-1 — Store 接口 + FileStore
+
+**Files**: `internal/session/store.go` (31 lines), `internal/session/filestore.go` (169 lines)
+
+**Store 接口**:
+- `Append(ctx, id, messages)` — 调用方传增量 messages,store 只 append
+- `Load(ctx, id)` — 读完整 history
+- `List(ctx)` — 所有 session ID,按 mtime 倒序
+- `Delete(ctx, id)` — 删除文件,idempotent
+
+**FileStore 实现**:
+- `NewFileStore(dir)` — 创建目录(0700),返回 store
+- `Append`: `os.O_APPEND|O_CREATE` + `bufio.Writer` + `f.Sync()`,每条 message
+  marshal 成 JSON 写一行
+- `Load`: `bufio.Reader.ReadBytes('\n')` 流式读取,支持任意长度行(大 tool output)
+- `List`: `filepath.Glob("*.jsonl")` + sort by mtime
+- `Delete`: `os.Remove`,`os.IsNotExist` 不算错
+- `NewID()`: `<date>-<random4>`,`crypto/rand` 取 16-bit
+
+**偏差**:
+- Spec 原计划用 `bufio.Scanner`(1MB buffer),实现发现 tool output 可能超过
+  1MB,改为 `bufio.Reader.ReadBytes` 支持任意长度行
+- `TestFileStore_AppendLargeOutput` 1.5MB message 验证
+
+**自验**: `make test` 11/11 session tests PASS;`make test ./...` 90+ total PASS;
+`make lint` clean。

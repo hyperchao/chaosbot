@@ -41,8 +41,8 @@ must update the table below when it starts, finishes, or changes scope.
 | 05-4  | tools/shell.exec | ✅ | 06-15 | 06-15 | ~340 | 10/10 | `exec.CommandContext` + SIGKILL on ctx cancel;`cappedWriter` 100 KB + marker;merged stdout+stderr;exit code 嵌入 reply(非零 exit 不返 Go err,只 LLM 可见);timeout `interrupted: <snippet>`;`/bin/sh -c` |
 | 05-5  | tools/web.fetch | ✅ | 06-15 | 06-15 | ~415 | 9/9 | `golang.org/x/net/html` tokenizer 抽 visible text;`io.LimitReader(1MB)` 输入 cap;output 50 KB cap;`http.Client` 复用;scheme 白名单 http/https;4xx/5xx 透传;`go.mod` 多 1 dep(4 direct,8 预算内) |
 | 05-6  | 默认工具注册 | ✅ | 06-15 | 06-15 | n/a | n/a | 不额外写代码:每个 tool commit 都 incremental 加进 `wire.go` 闭包;`make test` + REPL smoke 验证 5 个 tool 都能被 LLM 看到 |
-| 06-1  | session.Store 持久化 | ⬜ | | | | | spec 已写;NDJSON 增量追加 |
-| 06-2  | session 单测 | ⬜ | | | | | |
+| 06-1  | session.Store 持久化 | ✅ | 06-16 | 06-16 | 200 | 0/0 | Store 接口 + FileStore(JSONL,O_APPEND,bufio.Writer+fsync);200 LOC 拆成 impl 1 commit |
+| 06-2  | session 单测 | ✅ | 06-16 | 06-16 | 220 | 11/11 | 11 个测:roundtrip / 增量 / LoadNotExist / empty no-op / List / Delete / corrupt / large output / NewID |
 | 06-3  | Agent 接入 session | ⬜ | | | | | |
 | 07-1  | config 加载(YAML + env) | ✅ | 06-03 | 06-03 | 140 | 8/8 | yaml.v3 入 go.mod;`CHAOSBOT_*` env 覆盖 YAML;api_key_env 间接解析;无 XDG/cwd 发现 |
 | 07-2  | cobra 子命令 stub | ✅ | 06-03 | 06-03 | ~120 | 7/7 | **DI 版**:`main.go` 走 `di.New()` 装配;`cli` 拿 `agent.Agent` 接口 + 手写 `fakeAgent` mock;`needsConfig` 让 `version` 跳过 API key 校验;`openai.New` 用闭包转成无参 |
