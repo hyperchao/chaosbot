@@ -8,8 +8,8 @@
 | Field | Value |
 |---|---|
 | Phase | `04` |
-| Sub-units | `04-1` … `04-3` |
-| Status | `✅ complete` (all 3 sub-units done; see 实现笔记) |
+| Sub-units | `04-1` … `04-4` |
+| Status | `✅ complete` (all 4 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 03 (Tool/Registry), Phase 02-5 (Request.Validate) |
 | Estimated total LOC | ~370 Go (60 + 160 + 150) |
@@ -461,3 +461,38 @@ DI 路径 `buildAgent` helper 在 4 个 Run 测里正常工作);
 
 **未改 progress.md**:refactor 跟之前一样,sub-unit 04-3 范围不变,这是后置
 改进不是新 sub-unit。
+
+---
+
+### 实现笔记 04-4 — context window 滑动窗口
+
+**目标**: 在每次 `step()` 前估算 history token 数,超出 budget 时丢弃最旧的
+完整 turn(ADR-0002 § "Sliding window")。
+
+**新增函数**:
+- `contextBudget() int` — 返回 `MaxContextTokens × (1 - SafetyMarginFraction)`;
+  防御性 clamp: 负数 max → default,frac ∉ [0,1) → 最近合法边,budget ≥ 0
+- `estimateHistoryTokens([]Message) int` — 遍历每条 message 的 Content 和
+  ToolCalls.Arguments; args 通过 `unsafe.String(unsafe.SliceData(...))` zero-alloc
+  转 string 后调 `Provider.EstimateTokens`,确保 provider 自定义 tokenizer 被尊重
+- `applyWindow(ctx, history) ([]Message, error)` — 估算 → 超 budget 则调
+  `dropOldestTurns`
+- `dropOldestTurns(history, budget, estimate)` — 每次剥掉最旧一整个 turn
+  (user msg 到下一个 user msg 之间),直到 estimate ≤ budget
+- `turnEnd(history) int` — 返回第二个 user msg 的 index,或 -1
+
+**Config 新增**:
+- `MaxContextTokens int` — 0 → default 128K,> 0 → verbatim
+- `SafetyMarginFraction float64` — 0 → default 0.10,< 0 → clamp 0,≥ 1 → default
+
+**provider.go 改动**:
+- `EstimateTokensDefault` CJK 检测改用 `unsafe.Slice(unsafe.StringData(...))`
+  避免 `[]rune(content)` 分配;内部用 `utf8.DecodeRune` 逐字节迭代
+
+**自验**: `make test` 80+ PASS;`make lint` clean。
+
+**偏差**:
+- `EstimateTokensFromBytes` 曾短暂存在于 provider 包,后发现是错误抽象
+  (绕过 provider 自定义 tokenizer),改为 agent 内 inline unsafe 转换
+- `contextBudget` 最初返回 `(max, buffer int)`,后发现 caller 只用 budget,
+  简化为返回单个 `int`
