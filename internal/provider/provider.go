@@ -14,6 +14,8 @@ import (
 	"encoding/json"
 	"errors"
 	"time"
+	"unicode/utf8"
+	"unsafe"
 )
 
 // Role identifies the author of a Message.
@@ -155,28 +157,33 @@ type Provider interface {
 //     English in real GPT tokenizers; 3 is conservative).
 //
 // ±20% accuracy vs. real tokenizers; the agent's safety
-// buffer (ContextBufferFraction, default 10%) absorbs the
+// buffer (SafetyMarginFraction, default 10%) absorbs the
 // error. Returning a slightly higher count is safer
 // (windowing triggers earlier, never missing the cap).
+//
+// CJK detection iterates bytes directly via unsafe.Slice
+// to avoid the []rune allocation that the naive approach
+// requires.
 func EstimateTokensDefault(content string) int {
 	if content == "" {
 		return 0
 	}
 	const sample = 200
-	runes := []rune(content)
-	end := min(len(runes), sample)
+	b := unsafe.Slice(unsafe.StringData(content), len(content))
 	cjk := false
-	for _, r := range runes[:end] {
+	count := 0
+	for i := 0; i < len(b) && count < sample; {
+		r, size := utf8.DecodeRune(b[i:])
 		if r >= 0x3000 {
 			cjk = true
 			break
 		}
+		i += size
+		count++
 	}
 	if cjk {
-		// Count runes (chars); 1 rune ≈ 1 token for CJK.
-		return max(len(runes), 1)
+		return max(utf8.RuneCountInString(content), 1)
 	}
-	// Latin: bytes / 3 (ASCII is 1 byte per char).
 	return max(len(content)/3, 1)
 }
 

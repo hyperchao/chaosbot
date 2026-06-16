@@ -68,13 +68,15 @@ everything.
 ### Sliding window driven by token estimation
 
 The agent owns a `MaxContextTokens` config (default
-120_000, set to roughly 80% of a 128K context window
-so we leave headroom for the model's own per-response
-overhead and the safety buffer below). Before each
-`step()` the agent estimates the token count of the
-current history; if the estimate exceeds
-`MaxContextTokens - Buffer` (Buffer = 10% of
-MaxContextTokens), windowing kicks in.
+128_000 — the context window of mainstream
+long-context models like GPT-4 Turbo / Claude 3 /
+Gemini 1.5; users override per model). The
+`SafetyMarginFraction` (default 0.10) trims it
+for heuristic inaccuracy. Before each `step()` the
+agent estimates the token count of the current
+history; if the estimate exceeds
+`MaxContextTokens × (1 - SafetyMarginFraction)`,
+windowing kicks in.
 
 Token estimation is provided by a helper on the
 `provider.Provider` interface (new method
@@ -164,7 +166,8 @@ provider can later add a typed error if needed.
   implementations inherit the heuristic default; a
   provider can override for accuracy.
 - `agent.Agent` config gets `MaxContextTokens` (default
-  120_000) and `ContextBufferFraction` (default 0.10).
+  128_000, matching mainstream long-context models) and
+  `SafetyMarginFraction` (default 0.10).
   These land in the same `agent.Config` struct that
   already holds `System` / `Model` / `Temperature` /
   `MaxTokens` / `MaxSteps`.

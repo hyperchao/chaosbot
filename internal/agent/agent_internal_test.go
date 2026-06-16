@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	agentfake "chaosbot/internal/agent/fake"
@@ -262,5 +263,152 @@ func TestRun_ProviderError_DoesNotMutateHistory(t *testing.T) {
 	}
 	if len(a.History) != prevLen {
 		t.Errorf("len(a.History) = %d, want %d (failed Run must not append)", len(a.History), prevLen)
+	}
+}
+
+// TestEstimateHistoryTokens asserts the per-message
+// sum plus actual tool call argument estimation.
+func TestEstimateHistoryTokens(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+
+	t.Run("content_only", func(t *testing.T) {
+		hist := []provider.Message{
+			{Role: provider.RoleUser, Content: "hello world"},
+			{Role: provider.RoleAssistant, Content: "ok"},
+		}
+		got := a.estimateHistoryTokens(hist)
+		// "hello world" ≈ 4 tokens, "ok" ≈ 1 token
+		if got < 3 || got > 10 {
+			t.Errorf("estimate = %d, want roughly 5", got)
+		}
+	})
+
+	t.Run("empty_args", func(t *testing.T) {
+		hist := []provider.Message{
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{Name: "x"}}},
+		}
+		got := a.estimateHistoryTokens(hist)
+		if got != 0 {
+			t.Errorf("estimate = %d, want 0 (empty args)", got)
+		}
+	})
+
+	t.Run("nonempty_args", func(t *testing.T) {
+		args := json.RawMessage(`{"path":"/foo/bar","content":"hello"}`)
+		hist := []provider.Message{
+			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{Name: "x", Arguments: args}}},
+		}
+		got := a.estimateHistoryTokens(hist)
+		if got < 3 || got > 15 {
+			t.Errorf("estimate = %d, want roughly 8", got)
+		}
+	})
+}
+
+// TestApplyWindow_NoOpWhenUnderBudget verifies history at
+// or below the budget is returned unchanged.
+func TestApplyWindow_NoOpWhenUnderBudget(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 1000 // generous
+	a.Cfg.SafetyMarginFraction = 0.10
+	hist := []provider.Message{
+		NewUserMessage("hi"),
+		NewAssistantMessage("ok", nil),
+	}
+	out, err := a.applyWindow(context.Background(), hist)
+	if err != nil {
+		t.Fatalf("applyWindow: %v", err)
+	}
+	if len(out) != len(hist) {
+		t.Errorf("len = %d, want %d (no-op)", len(out), len(hist))
+	}
+}
+
+// TestApplyWindow_DropsOldestTurn verifies basic
+// windowing: with 3 turns and a 2-turn budget, the
+// oldest turn is dropped.
+func TestApplyWindow_DropsOldestTurn(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 50
+	a.Cfg.SafetyMarginFraction = 0.0
+	big := strings.Repeat("a", 100)
+	hist := []provider.Message{
+		NewUserMessage(big),
+		NewAssistantMessage("a1", nil),
+		NewUserMessage(big),
+		NewAssistantMessage("a2", nil),
+		NewUserMessage(big),
+		NewAssistantMessage("a3", nil),
+	}
+	out, err := a.applyWindow(context.Background(), hist)
+	if err != nil {
+		t.Fatalf("applyWindow: %v", err)
+	}
+	if len(out) >= len(hist) {
+		t.Errorf("len = %d, want < %d", len(out), len(hist))
+	}
+	if out[0].Content != big {
+		t.Errorf("out[0] is not the second user prompt")
+	}
+}
+
+// TestApplyWindow_NoOpWhenMaxContextTokensIsZero verifies
+// that the zero value for MaxContextTokens (unset
+// config) gets the default budget and does no windowing
+// on small histories.
+func TestApplyWindow_NoOpWhenMaxContextTokensIsZero(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 0 // unset
+	hist := []provider.Message{NewUserMessage("hi"), NewAssistantMessage("ok", nil)}
+	out, err := a.applyWindow(context.Background(), hist)
+	if err != nil {
+		t.Fatalf("applyWindow: %v", err)
+	}
+	if len(out) != len(hist) {
+		t.Errorf("len = %d, want %d (no-op on tiny history)", len(out), len(hist))
+	}
+}
+
+func TestContextBudget_Defaults(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 0 // unset → default 128k
+	a.Cfg.SafetyMarginFraction = 0
+	got := a.contextBudget()
+	want := int(128_000 * 0.90) // default frac = 0.10
+	if got != want {
+		t.Errorf("contextBudget() = %d, want %d", got, want)
+	}
+}
+
+func TestContextBudget_NegativeMaxClampsToDefault(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = -100
+	a.Cfg.SafetyMarginFraction = 0
+	got := a.contextBudget()
+	want := int(128_000 * 0.90)
+	if got != want {
+		t.Errorf("contextBudget() = %d, want %d (negative max → default)", got, want)
+	}
+}
+
+func TestContextBudget_FracBelowZeroClampsToZero(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 1000
+	a.Cfg.SafetyMarginFraction = -0.5
+	got := a.contextBudget()
+	want := 1000 // frac clamped to 0, budget = max
+	if got != want {
+		t.Errorf("contextBudget() = %d, want %d (negative frac → 0)", got, want)
+	}
+}
+
+func TestContextBudget_FracAboveOneClampsToDefault(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 1000
+	a.Cfg.SafetyMarginFraction = 1.5
+	got := a.contextBudget()
+	want := int(1000 * 0.90) // frac clamped to default 0.10
+	if got != want {
+		t.Errorf("contextBudget() = %d, want %d (frac>1 → default)", got, want)
 	}
 }
