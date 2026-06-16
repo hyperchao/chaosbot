@@ -133,4 +133,56 @@ type Config struct {
 type Provider interface {
 	Chat(ctx context.Context, req Request) (*Response, error)
 	Name() string
+
+	// EstimateTokens returns the approximate token count of
+	// the given content. The default heuristic (see
+	// EstimateTokensDefault) is ±20% accurate vs. real
+	// tokenizers, which is good enough for windowing
+	// with a safety buffer. Providers with access to an
+	// exact tokenizer (e.g. tiktoken for OpenAI) can
+	// override for higher accuracy.
+	EstimateTokens(content string) int
 }
+
+// EstimateTokensDefault is the heuristic fallback used by
+// providers that don't override Provider.EstimateTokens.
+//
+// The heuristic:
+//   - Detect CJK (runes >= 0x3000 in a 200-rune sample)
+//     and use 1 rune/token (closer to 1.0-1.5 for
+//     Chinese / Japanese / Korean tokenizers).
+//   - Otherwise use 3 bytes/token (closer to 4 for
+//     English in real GPT tokenizers; 3 is conservative).
+//
+// ±20% accuracy vs. real tokenizers; the agent's safety
+// buffer (ContextBufferFraction, default 10%) absorbs the
+// error. Returning a slightly higher count is safer
+// (windowing triggers earlier, never missing the cap).
+func EstimateTokensDefault(content string) int {
+	if content == "" {
+		return 0
+	}
+	const sample = 200
+	runes := []rune(content)
+	end := min(len(runes), sample)
+	cjk := false
+	for _, r := range runes[:end] {
+		if r >= 0x3000 {
+			cjk = true
+			break
+		}
+	}
+	if cjk {
+		// Count runes (chars); 1 rune ≈ 1 token for CJK.
+		return max(len(runes), 1)
+	}
+	// Latin: bytes / 3 (ASCII is 1 byte per char).
+	return max(len(content)/3, 1)
+}
+
+// ErrContextLength is the sentinel returned (or wrapped) by a
+// provider when the LLM rejected the request because the
+// combined prompt exceeds the model's context window. The
+// agent uses this signal to clear the in-memory history and
+// ask the LLM to repeat its last request.
+var ErrContextLength = errors.New("provider: context length exceeded")

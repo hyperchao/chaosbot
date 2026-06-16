@@ -50,6 +50,12 @@ func New(cfg provider.Config) provider.Provider {
 // Name implements provider.Provider.
 func (p *Provider) Name() string { return p.name }
 
+// EstimateTokens implements provider.Provider. Uses the
+// default heuristic — OpenAI's real tokenizer is the
+// tiktoken algorithm which would add a 5 MB binary for
+// marginal accuracy gain over the 10% safety buffer.
+func (p *Provider) EstimateTokens(content string) int { return provider.EstimateTokensDefault(content) }
+
 // Chat implements provider.Provider. The provider.Request is mapped
 // to the SDK's chat-completion request; the SDK's response is mapped
 // back into provider.Response.

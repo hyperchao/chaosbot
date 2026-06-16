@@ -46,6 +46,9 @@ func New(name string) *Provider {
 // Name implements provider.Provider.
 func (f *Provider) Name() string { return f.NameStr }
 
+// EstimateTokens implements provider.Provider.
+func (f *Provider) EstimateTokens(content string) int { return provider.EstimateTokensDefault(content) }
+
 // Chat implements provider.Provider.
 func (f *Provider) Chat(_ context.Context, req provider.Request) (*provider.Response, error) {
 	f.Calls++

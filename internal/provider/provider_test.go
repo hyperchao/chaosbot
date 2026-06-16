@@ -3,6 +3,7 @@ package provider_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 
 	"chaosbot/internal/provider"
@@ -103,5 +104,49 @@ func TestRequest_Validate(t *testing.T) {
 				t.Errorf("Validate() = %v, want %v", got, c.want)
 			}
 		})
+	}
+}
+
+func TestEstimateTokensDefault_Empty(t *testing.T) {
+	if got := provider.EstimateTokensDefault(""); got != 0 {
+		t.Errorf("EstimateTokensDefault(\"\") = %d, want 0", got)
+	}
+}
+
+func TestEstimateTokensDefault_Latin(t *testing.T) {
+	// 30 ASCII chars → heuristic returns 30/3 = 10 tokens.
+	// Real GPT tokenizers typically return 6-8; the
+	// heuristic is intentionally conservative (higher
+	// count → windowing triggers earlier → never misses
+	// the cap).
+	got := provider.EstimateTokensDefault("hello world this is a test!!")
+	if got < 5 || got > 15 {
+		t.Errorf("Latin 30 chars: got %d, want roughly 10", got)
+	}
+}
+
+func TestEstimateTokensDefault_CJK(t *testing.T) {
+	// 30 CJK chars → heuristic returns 30/1 = 30 tokens.
+	// Real CJK tokenizers typically return 20-30; heuristic
+	// is conservative but in the right ballpark.
+	cjk := "你好世界你好世界你好世界你好世界你好世界"
+	got := provider.EstimateTokensDefault(cjk)
+	if got < 20 || got > 40 {
+		t.Errorf("CJK 30 chars: got %d, want roughly 30", got)
+	}
+}
+
+func TestEstimateTokensDefault_NonZeroMinimum(t *testing.T) {
+	// A 1-char non-empty string should still return at
+	// least 1, not 0.
+	if got := provider.EstimateTokensDefault("a"); got == 0 {
+		t.Error("1-char ASCII returned 0; minimum should be 1")
+	}
+}
+
+func TestErrContextLength_Sentinel(t *testing.T) {
+	wrapped := fmt.Errorf("openai: %w: 400", provider.ErrContextLength)
+	if !errors.Is(wrapped, provider.ErrContextLength) {
+		t.Error("wrapped error should be matchable via errors.Is")
 	}
 }

@@ -97,3 +97,7 @@ func (emptyProvider) Name() string { return "empty" }
 func (emptyProvider) Chat(_ context.Context, _ provider.Request) (*provider.Response, error) {
 	return nil, errNoProvider
 }
+
+func (emptyProvider) EstimateTokens(content string) int {
+	return provider.EstimateTokensDefault(content)
+}
