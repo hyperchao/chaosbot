@@ -19,8 +19,8 @@ import (
 	"chaosbot/internal/provider"
 )
 
-// FileStore persists sessions as NDJSON files in a directory.
-// One file per session: <dir>/<id>.ndjson.
+// FileStore persists sessions as JSONL files in a directory.
+// One file per session: <dir>/<id>.jsonl.
 // Each line is a JSON-encoded provider.Message.
 type FileStore struct {
 	dir string
@@ -38,7 +38,7 @@ func NewFileStore(dir string) (*FileStore, error) {
 
 // path returns the on-disk path for a session ID.
 func (fs *FileStore) path(id string) string {
-	return filepath.Join(fs.dir, id+".ndjson")
+	return filepath.Join(fs.dir, id+".jsonl")
 }
 
 // Append appends messages to the session file. Atomic at the OS
@@ -116,7 +116,7 @@ func (fs *FileStore) List(ctx context.Context) ([]string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	matches, err := filepath.Glob(filepath.Join(fs.dir, "*.ndjson"))
+	matches, err := filepath.Glob(filepath.Join(fs.dir, "*.jsonl"))
 	if err != nil {
 		return nil, fmt.Errorf("session: glob: %w", err)
 	}
@@ -130,7 +130,7 @@ func (fs *FileStore) List(ctx context.Context) ([]string, error) {
 		if err != nil {
 			continue
 		}
-		id := strings.TrimSuffix(filepath.Base(m), ".ndjson")
+		id := strings.TrimSuffix(filepath.Base(m), ".jsonl")
 		entries = append(entries, entry{id: id, mtime: fi.ModTime()})
 	}
 	sort.Slice(entries, func(i, j int) bool {

@@ -94,7 +94,7 @@ func TestFileStore_AppendEmptyNoOp(t *testing.T) {
 	if err := fs.Append(context.Background(), "s1", nil); err != nil {
 		t.Fatalf("Append nil: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "s1.ndjson")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("empty Append should not create file, stat err = %v", err)
 	}
 }
@@ -146,7 +146,7 @@ func TestFileStore_Delete(t *testing.T) {
 	if err := fs.Delete(ctx, "s1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "s1.ndjson")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("file should be gone, stat err = %v", err)
 	}
 	_, err := fs.Load(ctx, "s1")
@@ -165,7 +165,7 @@ func TestFileStore_DeleteNotExistIsIdempotent(t *testing.T) {
 func TestFileStore_LoadCorruptLine(t *testing.T) {
 	fs, dir := newStore(t)
 	// Write a valid line, then garbage, then another valid line.
-	path := filepath.Join(dir, "s1.ndjson")
+	path := filepath.Join(dir, "s1.jsonl")
 	content := `{"role":"user","content":"hi"}
 not valid json
 {"role":"assistant","content":"ok"}
