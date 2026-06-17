@@ -158,7 +158,7 @@ func (c *CLI) replCmd() error {
 		}
 		reply, err := c.Agent.Run(context.Background(), line)
 		if err != nil {
-			fmt.Fprintln(c.ErrOut, "error:", err)
+			fmt.Fprintln(c.ErrOut, "error:", agent.HumanError(err))
 			continue
 		}
 		fmt.Fprintln(c.Out, reply)

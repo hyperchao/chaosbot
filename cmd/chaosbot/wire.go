@@ -43,11 +43,13 @@ func buildContainer(cfg *config.Config) *di.DI {
 			return emptyProvider{}
 		}
 		return openai.New(provider.Config{
-			Name:    cfg.Provider.Name,
-			APIKey:  cfg.Provider.APIKey,
-			BaseURL: cfg.Provider.BaseURL,
-			OrgID:   cfg.Provider.OrgID,
-			Timeout: cfg.Provider.Timeout,
+			Name:           cfg.Provider.Name,
+			APIKey:         cfg.Provider.APIKey,
+			BaseURL:        cfg.Provider.BaseURL,
+			OrgID:          cfg.Provider.OrgID,
+			Timeout:        cfg.Provider.Timeout,
+			MaxRetries:     cfg.Provider.MaxRetries,
+			RetryBaseDelay: cfg.Provider.RetryBaseDelay,
 		})
 	})
 

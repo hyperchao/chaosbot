@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
 	"testing"
@@ -14,6 +15,7 @@ import (
 	"chaosbot/cmd/chaosbot/cli"
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
+	"chaosbot/internal/provider"
 )
 
 // fakeAgent is a hand-written test double of agent.Agent.
@@ -345,5 +347,62 @@ func TestREPL_EOF_Exits(t *testing.T) {
 	}
 	if called {
 		t.Error("agent should not be invoked on EOF")
+	}
+}
+
+// TestREPL_RateLimitDoesNotExit verifies that a transient
+// error from agent.Run is printed but does not terminate
+// the REPL — the next prompt is still accepted.
+func TestREPL_RateLimitDoesNotExit(t *testing.T) {
+	var calls int
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "", fmt.Errorf("wrapped: %w: rate limit", provider.ErrRateLimited)
+			}
+			return "ok", nil
+		},
+	}
+	c, out, errOut := buildREPL(t, fa, "first\nsecond\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2 (REPL should continue after error)", calls)
+	}
+	if !strings.Contains(errOut.String(), "rate limited") {
+		t.Errorf("errOut = %q, want contains 'rate limited'", errOut.String())
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Errorf("out = %q, want contains 'ok' (second turn reply)", out.String())
+	}
+}
+
+// TestREPL_AuthErrorDoesNotExit verifies that a 401-style
+// error is printed but does not terminate the REPL.
+func TestREPL_AuthErrorDoesNotExit(t *testing.T) {
+	var calls int
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			calls++
+			if calls == 1 {
+				return "", fmt.Errorf("wrapped: %w: bad key", provider.ErrAuthFailed)
+			}
+			return "ok", nil
+		},
+	}
+	c, out, errOut := buildREPL(t, fa, "first\nsecond\n/exit\n")
+	if err := c.Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if calls != 2 {
+		t.Errorf("calls = %d, want 2", calls)
+	}
+	if !strings.Contains(errOut.String(), "authentication failed") {
+		t.Errorf("errOut = %q, want contains 'authentication failed'", errOut.String())
+	}
+	if !strings.Contains(out.String(), "ok") {
+		t.Errorf("out = %q, want contains 'ok'", out.String())
 	}
 }

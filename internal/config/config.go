@@ -32,13 +32,15 @@ type Config struct {
 // settings plus a few chaosbot-specific conveniences (api_key_env
 // for indirection, model for the Agent).
 type ProviderConfig struct {
-	Name      string        `yaml:"name"`
-	APIKey    string        `yaml:"api_key"`
-	APIKeyEnv string        `yaml:"api_key_env"`
-	BaseURL   string        `yaml:"base_url"`
-	Model     string        `yaml:"model"`
-	OrgID     string        `yaml:"org_id"`
-	Timeout   time.Duration `yaml:"timeout"`
+	Name           string        `yaml:"name"`
+	APIKey         string        `yaml:"api_key"`
+	APIKeyEnv      string        `yaml:"api_key_env"`
+	BaseURL        string        `yaml:"base_url"`
+	Model          string        `yaml:"model"`
+	OrgID          string        `yaml:"org_id"`
+	Timeout        time.Duration `yaml:"timeout"`
+	MaxRetries     int           `yaml:"max_retries"`
+	RetryBaseDelay time.Duration `yaml:"retry_base_delay"`
 }
 
 // Load reads YAML from path (if non-empty), then overlays
@@ -117,6 +119,12 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Provider.Timeout == 0 {
 		cfg.Provider.Timeout = 60 * time.Second
+	}
+	if cfg.Provider.MaxRetries == 0 {
+		cfg.Provider.MaxRetries = 3
+	}
+	if cfg.Provider.RetryBaseDelay == 0 {
+		cfg.Provider.RetryBaseDelay = 1 * time.Second
 	}
 	if cfg.MaxSteps == 0 {
 		cfg.MaxSteps = 30
