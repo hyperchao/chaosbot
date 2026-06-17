@@ -116,13 +116,18 @@ type Response struct {
 //
 // Fields that some implementations don't use (e.g. OrgID for
 // non-OpenAI vendors) are silently ignored. Timeout=0 means
-// "implementation default".
+// "implementation default". MaxRetries=0 disables retry;
+// 3 is the default (one initial attempt + 3 retries = 4
+// total). RetryBaseDelay=0 means "use implementation default"
+// (1s).
 type Config struct {
-	Name    string
-	APIKey  string
-	BaseURL string
-	OrgID   string
-	Timeout time.Duration
+	Name           string
+	APIKey         string
+	BaseURL        string
+	OrgID          string
+	Timeout        time.Duration
+	MaxRetries     int
+	RetryBaseDelay time.Duration
 }
 
 // Provider is the LLM boundary. Implementations must be safe for
@@ -193,3 +198,23 @@ func EstimateTokensDefault(content string) int {
 // agent uses this signal to clear the in-memory history and
 // ask the LLM to repeat its last request.
 var ErrContextLength = errors.New("provider: context length exceeded")
+
+// Error sentinels. Concrete providers (OpenAI, future
+// Anthropic, etc.) classify HTTP / network errors into
+// these categories. Callers (the agent loop, REPL) use
+// errors.Is(err, ErrXxx) to branch:
+//   - ErrRateLimited / ErrServerError / ErrNetwork:
+//     transient; safe to retry with backoff.
+//   - ErrAuthFailed: bad API key; non-retryable; tell user
+//     to check credentials.
+//   - ErrBadRequest: malformed request; non-retryable; likely
+//     a bug in chaosbot.
+//   - ErrContextLength: prompt too long; non-retryable;
+//     agent clears in-memory history.
+var (
+	ErrRateLimited = errors.New("provider: rate limited")
+	ErrAuthFailed  = errors.New("provider: authentication failed")
+	ErrServerError = errors.New("provider: server error")
+	ErrBadRequest  = errors.New("provider: bad request")
+	ErrNetwork     = errors.New("provider: network error")
+)
