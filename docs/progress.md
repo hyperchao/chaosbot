@@ -66,3 +66,10 @@ git diff --stat <prev-tag-or-commit>..HEAD -- ':!docs' ':!*.md' ':!*.yaml' ':!*.
 ## 拆分
 
 (此处记录超出 200 行的子阶段)
+
+## 已知问题（deferred）
+
+未解决的设计问题，详情见 `docs/issues/`：
+
+- [001](issues/001-session-save-duplicates.md) — Session save 失败导致偶发重复 message
+  (Append 部分写入 + in-memory offset 未更新 → 下次 retry 重复)。MVP 接受。

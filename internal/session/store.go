@@ -6,6 +6,7 @@ package session
 
 import (
 	"context"
+	"os"
 
 	"chaosbot/internal/provider"
 )
@@ -28,4 +29,27 @@ type Store interface {
 	// Delete removes the session file. Idempotent:
 	// deleting a non-existent session is not an error.
 	Delete(ctx context.Context, id string) error
+}
+
+// NoopStore discards every operation. Used as a stand-in
+// when no session persistence is configured (no API key,
+// no sessions dir) so the agent can run in pure in-memory
+// mode without DI panics. Load returns os.ErrNotExist so
+// Resume cleanly reports a missing session.
+type NoopStore struct{}
+
+func (NoopStore) Append(_ context.Context, _ string, _ []provider.Message) error {
+	return nil
+}
+
+func (NoopStore) Load(_ context.Context, _ string) ([]provider.Message, error) {
+	return nil, os.ErrNotExist
+}
+
+func (NoopStore) List(_ context.Context) ([]string, error) {
+	return nil, nil
+}
+
+func (NoopStore) Delete(_ context.Context, _ string) error {
+	return nil
 }

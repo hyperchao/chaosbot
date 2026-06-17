@@ -121,7 +121,7 @@ func (fs *FileStore) List(ctx context.Context) ([]string, error) {
 		return nil, fmt.Errorf("session: glob: %w", err)
 	}
 	type entry struct {
-		id   string
+		id    string
 		mtime time.Time
 	}
 	entries := make([]entry, 0, len(matches))

@@ -3,6 +3,7 @@ package config_test
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -161,5 +162,34 @@ func TestLoad_YAMLFileNotFound(t *testing.T) {
 	_, err := config.Load("/nonexistent/config.yaml")
 	if err == nil {
 		t.Fatal("Load: want error when file does not exist, got nil")
+	}
+}
+
+func TestLoad_SessionsDirDefault(t *testing.T) {
+	t.Setenv("CHAOSBOT_API_KEY", "sk-test")
+	t.Setenv("CHAOSBOT_SESSIONS_DIR", "")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SessionsDir == "" {
+		t.Error("SessionsDir is empty; want default")
+	}
+	// The default should reference the user's home dir.
+	home, _ := os.UserHomeDir()
+	if home != "" && !strings.HasPrefix(cfg.SessionsDir, home) {
+		t.Errorf("SessionsDir = %q, want prefix %q", cfg.SessionsDir, home)
+	}
+}
+
+func TestLoad_SessionsDirFromEnv(t *testing.T) {
+	t.Setenv("CHAOSBOT_API_KEY", "sk-test")
+	t.Setenv("CHAOSBOT_SESSIONS_DIR", "/tmp/my-sessions")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.SessionsDir != "/tmp/my-sessions" {
+		t.Errorf("SessionsDir = %q, want /tmp/my-sessions", cfg.SessionsDir)
 	}
 }

@@ -1,8 +1,8 @@
 package session_test
 
 import (
+	"bytes"
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,7 +84,10 @@ func TestFileStore_AppendIncrements(t *testing.T) {
 func TestFileStore_LoadNotExist(t *testing.T) {
 	fs, _ := newStore(t)
 	_, err := fs.Load(context.Background(), "nope")
-	if !errors.Is(err, os.ErrNotExist) {
+	if err == nil {
+		t.Fatal("want error for missing session")
+	}
+	if !os.IsNotExist(err) {
 		t.Errorf("err = %v, want os.ErrNotExist", err)
 	}
 }
@@ -94,7 +97,7 @@ func TestFileStore_AppendEmptyNoOp(t *testing.T) {
 	if err := fs.Append(context.Background(), "s1", nil); err != nil {
 		t.Fatalf("Append nil: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !os.IsNotExist(err) {
 		t.Errorf("empty Append should not create file, stat err = %v", err)
 	}
 }
@@ -146,11 +149,11 @@ func TestFileStore_Delete(t *testing.T) {
 	if err := fs.Delete(ctx, "s1"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !os.IsNotExist(err) {
 		t.Errorf("file should be gone, stat err = %v", err)
 	}
 	_, err := fs.Load(ctx, "s1")
-	if !errors.Is(err, os.ErrNotExist) {
+	if !os.IsNotExist(err) {
 		t.Errorf("Load after Delete: err = %v, want os.ErrNotExist", err)
 	}
 }
@@ -164,7 +167,6 @@ func TestFileStore_DeleteNotExistIsIdempotent(t *testing.T) {
 
 func TestFileStore_LoadCorruptLine(t *testing.T) {
 	fs, dir := newStore(t)
-	// Write a valid line, then garbage, then another valid line.
 	path := filepath.Join(dir, "s1.jsonl")
 	content := `{"role":"user","content":"hi"}
 not valid json
@@ -180,7 +182,6 @@ not valid json
 	if !strings.Contains(err.Error(), "corrupt") {
 		t.Errorf("err = %v, want contains 'corrupt'", err)
 	}
-	// First valid message should be returned before the error.
 	if len(got) != 1 || got[0].Content != "hi" {
 		t.Errorf("got = %+v, want one 'hi' message", got)
 	}
@@ -188,7 +189,6 @@ not valid json
 
 func TestFileStore_AppendLargeOutput(t *testing.T) {
 	fs, _ := newStore(t)
-	// Single message with 1.5 MB content (exceeds default 64KB scanner buffer).
 	big := strings.Repeat("a", 1_500_000)
 	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: big},
@@ -210,11 +210,94 @@ func TestFileStore_NewIDFormat(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewID: %v", err)
 	}
-	// Format: YYYYMMDD-XXXX (8 digits, dash, 4 hex chars)
 	if len(id) != 13 {
 		t.Errorf("len(id) = %d, want 13", len(id))
 	}
 	if id[8] != '-' {
 		t.Errorf("id[8] = %q, want '-'", id[8])
+	}
+}
+
+// TestFileStore_IncrementalAppendEquivalence demonstrates the
+// contract that the cli relies on: appending messages in
+// chunks produces the same end state as a single append.
+func TestFileStore_IncrementalAppendEquivalence(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	full := []provider.Message{
+		{Role: provider.RoleUser, Content: "a"},
+		{Role: provider.RoleAssistant, Content: "b"},
+		{Role: provider.RoleUser, Content: "c"},
+		{Role: provider.RoleAssistant, Content: "d"},
+	}
+	// Simulate the cli pattern: Append(history[offset:]) per turn.
+	if err := fs.Append(ctx, "s1", full[:1]); err != nil {
+		t.Fatalf("Append 1: %v", err)
+	}
+	// First "turn" added a user msg and a tool/assistant
+	// response (assistant). The cli appends what it has.
+	if err := fs.Append(ctx, "s1", full[1:2]); err != nil {
+		t.Fatalf("Append 2: %v", err)
+	}
+	if err := fs.Append(ctx, "s1", full[2:]); err != nil {
+		t.Fatalf("Append 3: %v", err)
+	}
+	got, err := fs.Load(ctx, "s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != len(full) {
+		t.Errorf("len = %d, want %d", len(got), len(full))
+	}
+	for i, m := range got {
+		if m.Content != full[i].Content {
+			t.Errorf("msg[%d].Content = %q, want %q", i, m.Content, full[i].Content)
+		}
+	}
+}
+
+// TestFileStore_RoundTripToolCall verifies that messages
+// with ToolCalls (which contain a []byte Arguments field)
+// round-trip correctly through JSONL.
+func TestFileStore_RoundTripToolCall(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	original := []provider.Message{
+		{
+			Role:    provider.RoleAssistant,
+			Content: "",
+			ToolCalls: []provider.ToolCall{
+				{ID: "c1", Name: "read_file", Arguments: []byte(`{"path":"/foo"}`)},
+			},
+		},
+		{
+			Role:       provider.RoleTool,
+			ToolCallID: "c1",
+			Name:       "read_file",
+			Content:    "file contents here",
+		},
+	}
+	if err := fs.Append(ctx, "s1", original); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := fs.Load(ctx, "s1")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if len(got[0].ToolCalls) != 1 {
+		t.Fatalf("len(ToolCalls) = %d, want 1", len(got[0].ToolCalls))
+	}
+	tc := got[0].ToolCalls[0]
+	if tc.ID != "c1" || tc.Name != "read_file" {
+		t.Errorf("tc = %+v, want id=c1 name=read_file", tc)
+	}
+	if !bytes.Equal(tc.Arguments, []byte(`{"path":"/foo"}`)) {
+		t.Errorf("Arguments = %q, want %q", tc.Arguments, `{"path":"/foo"}`)
+	}
+	if got[1].ToolCallID != "c1" || got[1].Content != "file contents here" {
+		t.Errorf("tool msg = %+v, want tool_call_id=c1", got[1])
 	}
 }

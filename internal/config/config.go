@@ -25,6 +25,7 @@ type Config struct {
 	Temperature float64        `yaml:"temperature"`
 	MaxTokens   int            `yaml:"max_tokens"`
 	Workspace   string         `yaml:"workspace"`
+	SessionsDir string         `yaml:"sessions_dir"`
 }
 
 // ProviderConfig is the chaosbot-facing subset of provider
@@ -98,6 +99,9 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("CHAOSBOT_WORKSPACE"); v != "" {
 		cfg.Workspace = v
 	}
+	if v := os.Getenv("CHAOSBOT_SESSIONS_DIR"); v != "" {
+		cfg.SessionsDir = v
+	}
 }
 
 // applyDefaults fills zero-valued fields with sensible
@@ -119,6 +123,14 @@ func applyDefaults(cfg *Config) {
 	}
 	if cfg.Temperature == 0 {
 		cfg.Temperature = 0.7
+	}
+	if cfg.SessionsDir == "" {
+		home, err := os.UserHomeDir()
+		if err == nil {
+			cfg.SessionsDir = home + "/.chaosbot/sessions"
+		} else {
+			cfg.SessionsDir = ".chaosbot/sessions"
+		}
 	}
 }
 
