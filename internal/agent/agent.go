@@ -7,6 +7,7 @@ import (
 	"unsafe"
 
 	"chaosbot/internal/provider"
+	"chaosbot/internal/session"
 )
 
 // Agent is the boundary the CLI, session, and tests depend on.
@@ -22,6 +23,16 @@ import (
 type Agent interface {
 	Run(ctx context.Context, prompt string) (string, error)
 	Reset()
+	// Resume loads a saved session by id, replacing the
+	// current in-memory history with the loaded messages.
+	// Subsequent Run calls append to the loaded history and
+	// auto-save to the same session id.
+	Resume(ctx context.Context, id string) error
+	// SessionID returns the current session id, or "" if
+	// no session has been started yet (no successful Run
+	// since construction or last Reset). The CLI uses
+	// this to display the id to the user.
+	SessionID() string
 }
 
 // Config holds the agent's non-DI runtime config. The chaosbot
@@ -54,14 +65,52 @@ type Config struct {
 // build a fresh di.New() and register hand-written fakes").
 //
 // History has no di tag: it is per-instance state managed by
-// Run/Reset, not an injected dependency. The di library
+// Run/Reset/Resume, not an injected dependency. The di library
 // ignores untagged fields, leaving the zero value ([]Message)
 // in place.
+//
+// Store is injected via di; sessionID and sessionOffset are
+// per-instance state managed by Run/Reset/Resume. When Store
+// is nil the agent runs in pure in-memory mode with no
+// auto-save.
 type reActAgent struct {
 	Provider provider.Provider `di:"type"`
 	Registry *Registry         `di:"type"`
 	Cfg      Config            `di:"type"`
+	Store    session.Store     `di:"type"`
 	History  []provider.Message
+
+	sessionID     string
+	sessionOffset int
+}
+
+// Resume implements Agent. Loads a saved session by id:
+// reads the full history from Store, replaces the
+// in-memory history, and sets sessionID/offset so the
+// next Run continues from the loaded state and saves
+// back to the same id. Returns os.ErrNotExist (wrapped)
+// if the session doesn't exist; returns nil if Store
+// is nil (no persistence configured).
+func (a *reActAgent) Resume(ctx context.Context, id string) error {
+	if a.Store == nil {
+		return fmt.Errorf("agent: resume %s: no session store configured", id)
+	}
+	history, err := a.Store.Load(ctx, id)
+	if err != nil {
+		return fmt.Errorf("agent: resume %s: %w", id, err)
+	}
+	a.History = history
+	a.sessionID = id
+	a.sessionOffset = len(history)
+	return nil
+}
+
+// SessionID returns the current session id, or "" if
+// no session has been started yet (no successful Run
+// since construction or last Reset). The CLI uses
+// this to display the id to the user.
+func (a *reActAgent) SessionID() string {
+	return a.sessionID
 }
 
 // New is the no-arg constructor used by the di library. The
@@ -111,53 +160,105 @@ const defaultSafetyMarginFraction = 0.10
 // provider / Validate error fires, or when MaxSteps is
 // exhausted (in which case ErrMaxSteps is wrapped and
 // returned, and no assistant message is appended).
+//
+// Windowing is applied per-step only to the LLM view; the
+// cumulative `history` always reflects the full
+// conversation, regardless of how many turns applyWindow
+// drops. This keeps a.History and a.sessionOffset
+// consistent with what the store has on disk.
+//
+// On success, if Store is configured, the new messages
+// are auto-saved: a session id is generated on first
+// successful Run, and subsequent Runs append the
+// accumulated delta. The caller does not need to manage
+// session ids unless resuming an existing session
+// (see Resume).
 func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
-	// Build a candidate history with the new user message.
-	// We do NOT mutate a.History until the run succeeds.
-	// append() may or may not allocate a new backing array;
-	// either way, a.History is left unchanged because we
-	// never assign back until the final answer arrives.
+	// Build a candidate cumulative history. We do NOT
+	// mutate a.History until the run succeeds. append
+	// returns a slice that shares a.History's backing
+	// array if cap allows; that's safe because the
+	// loop only appends to `history`, never re-slices
+	// into a.History's existing elements.
 	history := append(a.History, NewUserMessage(prompt))
 
 	max := a.Cfg.MaxSteps
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
-	var final string
-	var err error
 	for i := 0; i < max; i++ {
-		if err = ctx.Err(); err != nil {
+		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		// Apply the sliding window before each step so
-		// the request we send to the provider is bounded
-		// by MaxContextTokens. summarizeBeforeDrop may add
-		// an extra Chat call if the budget is exceeded.
-		history, err = a.applyWindow(ctx, history)
+		// Apply the sliding window to a copy of `history`
+		// for the LLM call only. The LLM never sees more
+		// than MaxContextTokens worth of context.
+		view, err := a.applyWindow(ctx, history)
 		if err != nil {
 			return "", err
 		}
-		history, final, err = a.step(ctx, history)
+		newView, final, err := a.step(ctx, view)
 		if err != nil {
 			return "", err
+		}
+		// newView is the same as view + new messages
+		// (assistant + optional tool messages). Append
+		// those to the cumulative `history`. The windowed
+		// view is discarded; only the delta matters.
+		if len(newView) > len(view) {
+			history = append(history, newView[len(view):]...)
 		}
 		if final != "" {
 			a.History = history
+			a.saveOnSuccess(ctx, history)
 			return final, nil
 		}
 	}
 	return "", fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
 }
 
-// Reset implements Agent. It drops the in-memory conversation
-// history. The agent's Provider, Registry, and Cfg are
-// unaffected; subsequent Run calls start a fresh conversation
-// (with the same model / system prompt / tools).
+// saveOnSuccess persists the new turn. Generates a
+// session id on the first successful Run. Subsequent
+// Runs append the accumulated delta (history[oldOffset:]).
+// A nil Store is a no-op (in-memory mode).
+func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Message) {
+	if a.Store == nil {
+		return
+	}
+	if a.sessionID == "" {
+		id, err := session.NewID()
+		if err != nil {
+			// Log via stderr? For now, swallow — the in-memory
+			// state is correct; persistence is best-effort.
+			return
+		}
+		a.sessionID = id
+	}
+	if len(history) <= a.sessionOffset {
+		return
+	}
+	if err := a.Store.Append(ctx, a.sessionID, history[a.sessionOffset:]); err != nil {
+		return
+	}
+	a.sessionOffset = len(history)
+}
+
+// Reset implements Agent. It drops the in-memory
+// conversation history, deletes the current session
+// file (if any), and resets the session offset so the
+// next Run starts a fresh conversation with a new
+// session id. The agent's Provider, Registry, Cfg, and
+// Store are unaffected.
 func (a *reActAgent) Reset() {
 	a.History = a.History[:0]
+	if a.Store != nil && a.sessionID != "" {
+		_ = a.Store.Delete(context.Background(), a.sessionID)
+	}
+	a.sessionID = ""
+	a.sessionOffset = 0
 }
 
 // step performs one ReAct iteration: send history to the

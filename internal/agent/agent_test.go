@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"os"
 	"testing"
 
 	"github.com/hyperchao/di"
@@ -12,6 +13,7 @@ import (
 	"chaosbot/internal/agent/fake"
 	"chaosbot/internal/provider"
 	providerfake "chaosbot/internal/provider/fake"
+	"chaosbot/internal/session"
 )
 
 // buildAgent wires a test agent via the di library. Per
@@ -28,6 +30,20 @@ func buildAgent(t *testing.T, fp provider.Provider, reg *agent.Registry, cfg age
 	di.RegisterDI(c, func() provider.Provider { return fp })
 	di.RegisterDI(c, func() *agent.Registry { return reg })
 	di.RegisterDI(c, func() agent.Config { return cfg })
+	di.RegisterDI(c, func() session.Store { return session.NoopStore{} })
+	di.RegisterDI(c, agent.New)
+	return di.GetDI[agent.Agent](c)
+}
+
+// buildAgentWithStore is buildAgent + an explicit session.Store.
+// Used by 06-3 tests that need to verify persistence.
+func buildAgentWithStore(t *testing.T, fp provider.Provider, reg *agent.Registry, cfg agent.Config, store session.Store) agent.Agent {
+	t.Helper()
+	c := di.New()
+	di.RegisterDI(c, func() provider.Provider { return fp })
+	di.RegisterDI(c, func() *agent.Registry { return reg })
+	di.RegisterDI(c, func() agent.Config { return cfg })
+	di.RegisterDI(c, func() session.Store { return store })
 	di.RegisterDI(c, agent.New)
 	return di.GetDI[agent.Agent](c)
 }
@@ -231,5 +247,225 @@ func TestRun_Reset_ClearsHistory(t *testing.T) {
 	// After reset, turn 2 sees only the new user message.
 	if got := len(fp.AllReqs[1].Messages); got != 1 {
 		t.Errorf("turn 2 req.Messages len = %d, want 1 (post-reset)", got)
+	}
+}
+
+// TestAgent_SessionID_BeforeRun verifies the agent starts
+// with an empty session id (no successful Run yet).
+func TestAgent_SessionID_BeforeRun(t *testing.T) {
+	fp := providerfake.New("h0")
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{})
+	if id := a.SessionID(); id != "" {
+		t.Errorf("SessionID = %q, want empty before first Run", id)
+	}
+}
+
+// TestAgent_Run_AutoSavesToStore verifies that a successful
+// Run generates a session id and appends the new turn to
+// the store.
+func TestAgent_Run_AutoSavesToStore(t *testing.T) {
+	fp := providerfake.New("s0")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "reply-1"}},
+		{Resp: &provider.Response{Content: "reply-2"}},
+	}
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if _, err := a.Run(context.Background(), "q1"); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	id := a.SessionID()
+	if id == "" {
+		t.Fatal("SessionID empty after Run; want generated id")
+	}
+	hist, err := fs.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(hist) != 2 {
+		t.Fatalf("len(history) = %d, want 2", len(hist))
+	}
+	if hist[0].Content != "q1" || hist[1].Content != "reply-1" {
+		t.Errorf("messages = %+v, want [q1, reply-1]", hist)
+	}
+	// Second Run should append, not overwrite.
+	if _, err := a.Run(context.Background(), "q2"); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	hist, _ = fs.Load(context.Background(), id)
+	if len(hist) != 4 {
+		t.Errorf("len(history) after Run 2 = %d, want 4", len(hist))
+	}
+	if hist[2].Content != "q2" || hist[3].Content != "reply-2" {
+		t.Errorf("second turn = %+v, want [q2, reply-2]", hist[2:4])
+	}
+}
+
+// TestAgent_Run_NoOpStore_GeneratesSessionID verifies that
+// with a NoopStore the agent still generates a session id
+// (for display in REPL) but doesn't actually persist.
+func TestAgent_Run_NoOpStore_GeneratesSessionID(t *testing.T) {
+	fp := providerfake.New("ns")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1})
+	reply, err := a.Run(context.Background(), "q")
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if reply != "ok" {
+		t.Errorf("reply = %q, want 'ok'", reply)
+	}
+	if a.SessionID() == "" {
+		t.Error("SessionID should be set after Run, even with NoopStore")
+	}
+}
+
+// TestAgent_Reset_DeletesSession verifies that Reset
+// removes the on-disk session and clears the in-memory
+// state, so the next Run starts a fresh session.
+func TestAgent_Reset_DeletesSession(t *testing.T) {
+	fp := providerfake.New("r0")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if _, err := a.Run(context.Background(), "q1"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	id := a.SessionID()
+	if id == "" {
+		t.Fatal("SessionID empty after Run")
+	}
+	a.Reset()
+	if a.SessionID() != "" {
+		t.Errorf("SessionID after Reset = %q, want empty", a.SessionID())
+	}
+	// Session file should be gone.
+	if _, err := fs.Load(context.Background(), id); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("Load after Reset: err = %v, want os.ErrNotExist", err)
+	}
+	// Next Run creates a new session with a different id.
+	if _, err := a.Run(context.Background(), "q2"); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	newID := a.SessionID()
+	if newID == "" || newID == id {
+		t.Errorf("new SessionID = %q, want different non-empty", newID)
+	}
+}
+
+// TestAgent_Resume_LoadsAndContinues verifies that Resume
+// loads a saved session, sets it as the in-memory history,
+// and the next Run appends to the same id.
+func TestAgent_Resume_LoadsAndContinues(t *testing.T) {
+	fp := providerfake.New("res")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "new-reply"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	// Pre-populate a session.
+	ctx := context.Background()
+	prev := []provider.Message{
+		{Role: provider.RoleUser, Content: "earlier"},
+		{Role: provider.RoleAssistant, Content: "earlier-reply"},
+	}
+	if err := fs.Append(ctx, "sess-001", prev); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if err := a.Resume(ctx, "sess-001"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if a.SessionID() != "sess-001" {
+		t.Errorf("SessionID after Resume = %q, want sess-001", a.SessionID())
+	}
+	if _, err := a.Run(ctx, "new question"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	// Provider should have seen the loaded + new messages.
+	if len(fp.AllReqs) != 1 {
+		t.Fatalf("AllReqs len = %d, want 1", len(fp.AllReqs))
+	}
+	msgs := fp.AllReqs[0].Messages
+	if len(msgs) != 3 {
+		t.Fatalf("msgs len = %d, want 3 (2 loaded + 1 new)", len(msgs))
+	}
+	if msgs[2].Content != "new question" {
+		t.Errorf("new msg = %q, want 'new question'", msgs[2].Content)
+	}
+	// And the file should now have 4 messages (saved the new turn).
+	hist, _ := fs.Load(ctx, "sess-001")
+	if len(hist) != 4 {
+		t.Errorf("file history len = %d, want 4", len(hist))
+	}
+}
+
+// TestAgent_Resume_NotFound verifies Resume returns a
+// clear error for missing sessions.
+func TestAgent_Resume_NotFound(t *testing.T) {
+	fp := providerfake.New("rnf")
+	fs, _ := session.NewFileStore(t.TempDir())
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{}, fs)
+	err := a.Resume(context.Background(), "does-not-exist")
+	if err == nil {
+		t.Fatal("want error for missing session")
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err = %v, want wraps os.ErrNotExist", err)
+	}
+}
+
+// TestAgent_Resume_NoStore verifies Resume without a
+// Store returns a clear error.
+func TestAgent_Resume_NoStore(t *testing.T) {
+	fp := providerfake.New("rns")
+	a := buildAgent(t, fp, agent.NewRegistry(), agent.Config{})
+	err := a.Resume(context.Background(), "any-id")
+	if err == nil {
+		t.Fatal("want error when Store is nil")
+	}
+}
+
+// TestAgent_Run_WindowingDoesNotBreakSessionOffset verifies
+// that the sliding window (which drops old turns from the
+// LLM view) does not affect what gets saved. The store
+// must always have the cumulative full history, so
+// sessionOffset stays in sync with len(a.History).
+func TestAgent_Run_WindowingDoesNotBreakSessionOffset(t *testing.T) {
+	fp := providerfake.New("w0")
+	// 5 turns, each producing a reply.
+	script := make([]providerfake.Call, 5)
+	for i := range script {
+		script[i] = providerfake.Call{Resp: &provider.Response{Content: "ok"}}
+	}
+	fp.Script = script
+	fs, _ := session.NewFileStore(t.TempDir())
+	// Tiny budget: windowing will drop old turns on every
+	// step, so the LLM view is much smaller than the
+	// cumulative history.
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
+		MaxSteps:         1,
+		MaxContextTokens: 10, // very small; forces aggressive dropping
+	}, fs)
+	for i := 0; i < 5; i++ {
+		if _, err := a.Run(context.Background(), "q"); err != nil {
+			t.Fatalf("Run %d: %v", i, err)
+		}
+	}
+	id := a.SessionID()
+	hist, err := fs.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	// 5 turns × 2 messages each = 10 cumulative.
+	if len(hist) != 10 {
+		t.Errorf("len(history) = %d, want 10 (5 turns × 2 messages)", len(hist))
 	}
 }
