@@ -13,6 +13,7 @@ import (
 	"chaosbot/internal/config"
 	"chaosbot/internal/provider"
 	"chaosbot/internal/provider/openai"
+	"chaosbot/internal/session"
 	"chaosbot/internal/tools/fs"
 	"chaosbot/internal/tools/shell"
 	"chaosbot/internal/tools/web"
@@ -52,9 +53,7 @@ func buildContainer(cfg *config.Config) *di.DI {
 
 	// Agent. Cfg translates *config.Config into the agent's
 	// own DTO; missing config falls back to the zero value.
-	// The Registry is built with the default tool set here;
-	// future phases add more tools (write_file, edit_file,
-	// shell, web_fetch) to this same factory closure.
+	// The Registry is built with the default tool set here.
 	di.RegisterDI(c, func() *agent.Registry {
 		r := agent.NewRegistry()
 		r.Register(&fs.ReadFileTool{})
@@ -76,6 +75,23 @@ func buildContainer(cfg *config.Config) *di.DI {
 			MaxSteps:    cfg.MaxSteps,
 		}
 	})
+
+	// Session store. The agent owns persistence; we just
+	// build the FileStore here and register it under the
+	// Store interface. When config is missing or NewFileStore
+	// fails, fall back to NoopStore so the agent can still
+	// run (with empty session ids that don't persist).
+	di.RegisterDI(c, func() session.Store {
+		if cfg == nil || cfg.SessionsDir == "" {
+			return session.NoopStore{}
+		}
+		fs, err := session.NewFileStore(cfg.SessionsDir)
+		if err != nil {
+			return session.NoopStore{}
+		}
+		return fs
+	})
+
 	di.RegisterDI(c, func() agent.Agent { return agent.New() })
 
 	// CLI.

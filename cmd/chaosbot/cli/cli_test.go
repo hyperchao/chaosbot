@@ -21,6 +21,9 @@ import (
 type fakeAgent struct {
 	runFunc    func(ctx context.Context, userInput string) (string, error)
 	resetCalls int
+	sessionID  string
+	resumeID   string
+	resumeErr  error
 	// prompts captures every prompt passed to Run, so tests
 	// can verify multi-turn ordering without the agent owning
 	// history.
@@ -34,6 +37,15 @@ func (f *fakeAgent) Run(ctx context.Context, userInput string) (string, error) {
 
 func (f *fakeAgent) Reset() {
 	f.resetCalls++
+}
+
+func (f *fakeAgent) Resume(_ context.Context, id string) error {
+	f.resumeID = id
+	return f.resumeErr
+}
+
+func (f *fakeAgent) SessionID() string {
+	return f.sessionID
 }
 
 var _ agent.Agent = (*fakeAgent)(nil)
@@ -55,13 +67,6 @@ func buildCLI(t *testing.T, fp agent.Agent, cfg *config.Config) (*cli.CLI, *byte
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
 	di.RegisterAliasDI(c, "errout", func() io.Writer { return errOut })
 	di.RegisterAliasDI(c, "version", func() string { return "vtest" })
-	// *cli.CLI factory: di calls it, gets a zero *cli.CLI,
-	// then walks its fields and injects Agent / Config / In /
-	// Out / ErrOut / Version from the factories registered
-	// above. di's "reflect.Value.Set on zero Value" panic
-	// for nil interface factories means the *config.Config
-	// factory above must NOT return nil — tests pass a real
-	// (possibly zero) *config.Config value instead.
 	di.RegisterDI(c, func() *cli.CLI { return &cli.CLI{} })
 	return di.GetDI[*cli.CLI](c), out, errOut
 }
@@ -164,6 +169,45 @@ func TestRun_OneShot_AgentError_Propagates(t *testing.T) {
 	}
 }
 
+func TestRun_SessionFlag_CallsResume(t *testing.T) {
+	wantErr := errors.New("session not found")
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			return "ok", nil
+		},
+		resumeErr: wantErr,
+	}
+	c, _, _ := buildCLI(t, fa, &config.Config{})
+	err := c.Run([]string{"run", "--session", "sess-001", "hi"})
+	if !errors.Is(err, wantErr) {
+		t.Errorf("err = %v, want wraps %v", err, wantErr)
+	}
+	if fa.resumeID != "sess-001" {
+		t.Errorf("Resume id = %q, want sess-001", fa.resumeID)
+	}
+	if len(fa.prompts) != 0 {
+		t.Errorf("Run was called despite resume error: prompts = %v", fa.prompts)
+	}
+}
+
+func TestRun_SessionFlag_Success_ProceedsToRun(t *testing.T) {
+	fa := &fakeAgent{
+		runFunc: func(_ context.Context, _ string) (string, error) {
+			return "resumed-reply", nil
+		},
+	}
+	c, out, _ := buildCLI(t, fa, &config.Config{})
+	if err := c.Run([]string{"run", "--session", "sess-002", "next"}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if fa.resumeID != "sess-002" {
+		t.Errorf("Resume id = %q, want sess-002", fa.resumeID)
+	}
+	if !strings.Contains(out.String(), "resumed-reply") {
+		t.Errorf("out = %q, want 'resumed-reply'", out.String())
+	}
+}
+
 // buildREPL wires a CLI whose In reader is the supplied buffer.
 // Use this for tests that drive the REPL with programmed input.
 func buildREPL(t *testing.T, fp agent.Agent, input string) (*cli.CLI, *bytes.Buffer, *bytes.Buffer) {
@@ -204,9 +248,7 @@ func TestREPL_NoSubcommand_StartsREPL(t *testing.T) {
 
 // TestREPL_TwoTurnLoop drives two user prompts and verifies
 // that the fakeAgent's Run is invoked twice with the right
-// prompts. History is owned by the agent under test (a real
-// *reActAgent would feed back the prior exchange to the
-// provider; we only need to confirm dispatch here).
+// prompts.
 func TestREPL_TwoTurnLoop(t *testing.T) {
 	fa := &fakeAgent{
 		runFunc: func(_ context.Context, prompt string) (string, error) {

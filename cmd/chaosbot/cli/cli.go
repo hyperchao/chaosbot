@@ -9,6 +9,7 @@ import (
 	"bufio"
 	"context"
 	"errors"
+	"flag"
 	"fmt"
 	"io"
 	"strings"
@@ -24,6 +25,10 @@ import (
 // "errout" / "in" / "version" aliases let us register distinct
 // instances of common types (io.Writer, io.Reader, string) by
 // name.
+//
+// CLI does NOT know about session.Store; session persistence
+// is owned by the agent (Phase 06). CLI just calls agent.Run
+// / agent.Reset / agent.Resume; the agent handles save/load.
 type CLI struct {
 	Agent   agent.Agent    `di:"type"`
 	Config  *config.Config `di:"type"`
@@ -52,19 +57,35 @@ func (c *CLI) Run(args []string) error {
 	}
 }
 
+// runCmd handles `chaosbot run [flags] <prompt>`. Flags:
+//
+//	--session <id>  resume a saved session by id
 func (c *CLI) runCmd(args []string) error {
-	if len(args) == 0 {
-		return fmt.Errorf("run: missing prompt argument")
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	fs.SetOutput(c.ErrOut)
+	var sessionID string
+	fs.StringVar(&sessionID, "session", "", "resume a saved session by id")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	rest := fs.Args()
+	if len(rest) == 0 {
+		return errors.New("run: missing prompt argument")
 	}
 	if c.Agent == nil {
 		return errors.New("run: no agent available (config not loaded — set --config or env vars like CHAOSBOT_API_KEY)")
 	}
-	prompt := args[0]
-	answer, err := c.Agent.Run(context.Background(), prompt)
+	ctx := context.Background()
+	if sessionID != "" {
+		if err := c.Agent.Resume(ctx, sessionID); err != nil {
+			return err
+		}
+	}
+	reply, err := c.Agent.Run(ctx, rest[0])
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(c.Out, answer)
+	fmt.Fprintln(c.Out, reply)
 	return nil
 }
 
@@ -88,6 +109,7 @@ func (c *CLI) configCmd(args []string) error {
 	fmt.Fprintf(c.Out, "temperature: %v\n", cfg.Temperature)
 	fmt.Fprintf(c.Out, "max_tokens:  %d\n", cfg.MaxTokens)
 	fmt.Fprintf(c.Out, "workspace:   %s\n", cfg.Workspace)
+	fmt.Fprintf(c.Out, "sessions_dir: %s\n", cfg.SessionsDir)
 	return nil
 }
 
@@ -96,11 +118,12 @@ func (c *CLI) versionCmd(args []string) error {
 	return nil
 }
 
-// replCmd drives the read-eval-print loop. History lives in
-// the agent; the CLI just dispatches each line to Agent.Run
-// and prints the reply. Slash commands: /reset calls
-// Agent.Reset, /exit returns nil, /help prints the available
-// commands. EOF (empty input) is treated like /exit.
+// replCmd drives the read-eval-print loop. Session persistence
+// is owned by the agent; the CLI just dispatches each line to
+// Agent.Run and prints the reply. Slash commands: /reset calls
+// Agent.Reset (which deletes the session and starts fresh),
+// /exit returns nil, /help prints the available commands.
+// EOF (empty input) is treated like /exit.
 func (c *CLI) replCmd() error {
 	if c.Agent == nil {
 		return errors.New("repl: no agent available (config not loaded)")
