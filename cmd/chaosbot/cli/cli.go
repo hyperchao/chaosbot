@@ -104,6 +104,12 @@ func (c *CLI) configCmd(args []string) error {
 	} else {
 		fmt.Fprintf(c.Out, "timeout:     %s\n", cfg.Provider.Timeout)
 	}
+	fmt.Fprintf(c.Out, "max_retries: %d\n", cfg.Provider.MaxRetries)
+	if cfg.Provider.RetryBaseDelay == 0 {
+		fmt.Fprintln(c.Out, "retry_base_delay: (default)")
+	} else {
+		fmt.Fprintf(c.Out, "retry_base_delay: %s\n", cfg.Provider.RetryBaseDelay)
+	}
 	fmt.Fprintf(c.Out, "system:      %s\n", cfg.System)
 	fmt.Fprintf(c.Out, "max_steps:   %d\n", cfg.MaxSteps)
 	fmt.Fprintf(c.Out, "temperature: %v\n", cfg.Temperature)

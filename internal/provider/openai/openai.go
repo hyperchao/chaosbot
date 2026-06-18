@@ -143,28 +143,45 @@ func backoffWithJitter(attempt int, base time.Duration) time.Duration {
 // details (e.g. the "rate limit" reason), but errors.Is
 // callers can branch on the sentinel.
 func classifyOpenAIError(err error) error {
+	// *APIError is the SDK's normal error for responses with
+	// a parseable JSON {"error": {...}} body.
 	var apiErr *openaipkg.APIError
 	if errors.As(err, &apiErr) {
-		switch {
-		case apiErr.HTTPStatusCode == http.StatusTooManyRequests:
-			return fmt.Errorf("%w: %s", provider.ErrRateLimited, apiErr.Error())
-		case apiErr.HTTPStatusCode == http.StatusUnauthorized,
-			apiErr.HTTPStatusCode == http.StatusForbidden:
-			return fmt.Errorf("%w: %s", provider.ErrAuthFailed, apiErr.Error())
-		case apiErr.HTTPStatusCode >= 500 && apiErr.HTTPStatusCode < 600:
-			return fmt.Errorf("%w: %s", provider.ErrServerError, apiErr.Error())
-		case apiErr.HTTPStatusCode == http.StatusBadRequest:
-			// Could also be ErrContextLength, but the SDK
-			// doesn't distinguish; 04-4b safety net handles
-			// 400s from context length separately by string
-			// match in the agent loop.
-			return fmt.Errorf("%w: %s", provider.ErrBadRequest, apiErr.Error())
-		default:
-			return fmt.Errorf("%w: status %d: %s", provider.ErrBadRequest, apiErr.HTTPStatusCode, apiErr.Error())
-		}
+		return classifyByStatus(apiErr.HTTPStatusCode, apiErr.Error())
+	}
+	// *RequestError is returned when the response body is
+	// not valid JSON (e.g. HTML error page, empty body,
+	// binary). The status code is still on the request
+	// error so we can route it correctly.
+	var reqErr *openaipkg.RequestError
+	if errors.As(err, &reqErr) {
+		return classifyByStatus(reqErr.HTTPStatusCode, reqErr.Error())
 	}
 	// Non-APIError: network failure, timeout, DNS, etc.
 	return fmt.Errorf("%w: %s", provider.ErrNetwork, err.Error())
+}
+
+// classifyByStatus maps an HTTP status code to a provider
+// error sentinel. Shared between *APIError and *RequestError
+// classification paths.
+func classifyByStatus(status int, msg string) error {
+	switch {
+	case status == http.StatusTooManyRequests:
+		return fmt.Errorf("%w: %s", provider.ErrRateLimited, msg)
+	case status == http.StatusUnauthorized,
+		status == http.StatusForbidden:
+		return fmt.Errorf("%w: %s", provider.ErrAuthFailed, msg)
+	case status >= 500 && status < 600:
+		return fmt.Errorf("%w: %s", provider.ErrServerError, msg)
+	case status == http.StatusBadRequest:
+		// Could also be ErrContextLength, but the SDK
+		// doesn't distinguish; 04-4b safety net handles
+		// 400s from context length separately by string
+		// match in the agent loop.
+		return fmt.Errorf("%w: %s", provider.ErrBadRequest, msg)
+	default:
+		return fmt.Errorf("%w: status %d: %s", provider.ErrBadRequest, status, msg)
+	}
 }
 
 func timeoutOrDefault(d time.Duration) time.Duration {

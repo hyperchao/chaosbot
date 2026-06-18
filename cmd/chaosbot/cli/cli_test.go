@@ -97,10 +97,12 @@ func TestRun_Version(t *testing.T) {
 func TestRun_Config(t *testing.T) {
 	cfg := &config.Config{
 		Provider: config.ProviderConfig{
-			Name:    "openai",
-			APIKey:  "sk-abcdefghij1234",
-			BaseURL: "https://api.openai.com",
-			Timeout: 60 * time.Second,
+			Name:           "openai",
+			APIKey:         "sk-abcdefghij1234",
+			BaseURL:        "https://api.openai.com",
+			Timeout:        60 * time.Second,
+			MaxRetries:     5,
+			RetryBaseDelay: 2 * time.Second,
 		},
 		System:      "you are a helper",
 		MaxSteps:    25,
@@ -119,6 +121,9 @@ func TestRun_Config(t *testing.T) {
 		"provider:    openai",
 		"model:       gpt-4o-mini",
 		"api_key:     sk-a...1234",
+		"timeout:     1m0s",
+		"max_retries: 5",
+		"retry_base_delay: 2s",
 		"max_steps:   25",
 		"temperature: 0.7",
 		"max_tokens:  2048",

@@ -104,6 +104,16 @@ func applyEnv(cfg *Config) {
 	if v := os.Getenv("CHAOSBOT_SESSIONS_DIR"); v != "" {
 		cfg.SessionsDir = v
 	}
+	if v := os.Getenv("CHAOSBOT_MAX_RETRIES"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil {
+			cfg.Provider.MaxRetries = n
+		}
+	}
+	if v := os.Getenv("CHAOSBOT_RETRY_BASE_DELAY"); v != "" {
+		if d, err := time.ParseDuration(v); err == nil {
+			cfg.Provider.RetryBaseDelay = d
+		}
+	}
 }
 
 // applyDefaults fills zero-valued fields with sensible

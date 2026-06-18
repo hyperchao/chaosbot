@@ -134,6 +134,33 @@ func TestClassifyError_Network(t *testing.T) {
 	}
 }
 
+// TestClassifyError_RequestError_429 verifies that the
+// SDK's *RequestError (returned for malformed/non-JSON
+// response bodies) is still routed to the right sentinel
+// based on HTTPStatusCode. Without the second errors.As
+// branch, 429 + bad body becomes ErrNetwork.
+func TestClassifyError_RequestError_429(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusTooManyRequests)
+		// HTML body, not JSON — SDK returns *RequestError, not *APIError.
+		fmt.Fprint(w, "<html><body>rate limit</body></html>")
+	}))
+	defer srv.Close()
+	p := openai.New(provider.Config{
+		APIKey:         "test-key",
+		BaseURL:        srv.URL,
+		MaxRetries:     0, // single attempt so the test is fast
+		RetryBaseDelay: 1 * time.Millisecond,
+	})
+	_, err := p.Chat(context.Background(), provider.Request{Model: "m"})
+	if err == nil {
+		t.Fatal("want error")
+	}
+	if !errors.Is(err, provider.ErrRateLimited) {
+		t.Errorf("err = %v, want errors.Is ErrRateLimited (not ErrNetwork)", err)
+	}
+}
+
 // TestClassifyError_PreservesMessage verifies the wrapped
 // error still contains useful details (the API's reason
 // text), not just the sentinel.

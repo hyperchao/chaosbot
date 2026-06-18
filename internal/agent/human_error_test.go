@@ -3,6 +3,7 @@ package agent_test
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"chaosbot/internal/agent"
@@ -53,7 +54,7 @@ func TestHumanError_Network(t *testing.T) {
 	wrapped := fmt.Errorf("wrapped: %w", provider.ErrNetwork)
 	got := agent.HumanError(wrapped)
 	// We just want a useful message that mentions "network".
-	if !contains(got, "network") {
+	if !strings.Contains(got, "network") {
 		t.Errorf("got %q, want contains 'network'", got)
 	}
 }
@@ -64,7 +65,7 @@ func TestHumanError_BadRequestPreservesDetail(t *testing.T) {
 	inner := errors.New("model 'foo' not found")
 	err := fmt.Errorf("wrapped: %w: %s", provider.ErrBadRequest, inner.Error())
 	got := agent.HumanError(err)
-	if !contains(got, "model 'foo' not found") {
+	if !strings.Contains(got, "model 'foo' not found") {
 		t.Errorf("got %q, want contains API detail", got)
 	}
 }
@@ -82,17 +83,4 @@ func TestHumanError_Nil(t *testing.T) {
 	if got := agent.HumanError(nil); got != "" {
 		t.Errorf("got %q, want empty string for nil", got)
 	}
-}
-
-func contains(s, sub string) bool {
-	return len(s) >= len(sub) && (s == sub || indexOf(s, sub) >= 0)
-}
-
-func indexOf(s, sub string) int {
-	for i := 0; i+len(sub) <= len(s); i++ {
-		if s[i:i+len(sub)] == sub {
-			return i
-		}
-	}
-	return -1
 }
