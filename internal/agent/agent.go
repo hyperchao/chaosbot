@@ -189,27 +189,21 @@ func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
+	var final string
+	var stepErr error
 	for i := 0; i < max; i++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		// Apply the sliding window to a copy of `history`
-		// for the LLM call only. The LLM never sees more
-		// than MaxContextTokens worth of context.
-		view, err := a.applyWindow(ctx, history)
-		if err != nil {
-			return "", err
-		}
-		newView, final, err := a.step(ctx, view)
-		if err != nil {
-			return "", err
-		}
-		// newView is the same as view + new messages
-		// (assistant + optional tool messages). Append
-		// those to the cumulative `history`. The windowed
-		// view is discarded; only the delta matters.
-		if len(newView) > len(view) {
-			history = append(history, newView[len(view):]...)
+		// step takes the cumulative history, applies the
+		// window internally for the LLM call, appends the
+		// assistant + tool messages, and returns the
+		// updated history. This keeps a single growing
+		// backing array instead of allocating a fresh
+		// view + newHistory per step.
+		history, final, stepErr = a.step(ctx, history)
+		if stepErr != nil {
+			return "", stepErr
 		}
 		if final != "" {
 			a.History = history
@@ -261,12 +255,19 @@ func (a *reActAgent) Reset() {
 	a.sessionOffset = 0
 }
 
-// step performs one ReAct iteration: send history to the
-// provider, dispatch any tool calls, return the updated
-// history. If the assistant did not request any tools,
-// finalContent is the answer and the caller should stop;
-// otherwise the caller should call step again with the
-// returned history.
+// step performs one ReAct iteration: apply the sliding
+// window to `history` to get the LLM view, send it to the
+// provider, dispatch any tool calls, and append the
+// assistant + tool messages back to `history`. The
+// returned slice is the same backing array (possibly
+// grown via append) — the caller uses it as the input
+// to the next step or as the final committed history.
+//
+// Windowing happens internally: the LLM never sees more
+// than MaxContextTokens worth of context, but the
+// cumulative `history` always grows. This keeps a
+// single backing array growing in place instead of
+// allocating a fresh view + newHistory per step.
 //
 // Tool execution errors are NOT returned as Go errors — they
 // are embedded in the appended tool message (Content set to
@@ -274,9 +275,21 @@ func (a *reActAgent) Reset() {
 // Provider / Validate errors ARE returned as Go errors and
 // abort the loop; the caller surfaces them to the user.
 func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]provider.Message, string, error) {
+	// Apply the sliding window. When no windowing is
+	// needed, applyWindow returns `history` itself (no
+	// new array). When windowing drops turns, the
+	// returned slice is a sub-slice of `history` —
+	// still no new array, just a different start
+	// offset. Only dropOldestTurns's inner loop might
+	// allocate, and only when the cumulative history
+	// doesn't shrink fast enough.
+	view, err := a.applyWindow(ctx, history)
+	if err != nil {
+		return nil, "", err
+	}
 	req := provider.Request{
 		System:      a.Cfg.System,
-		Messages:    history,
+		Messages:    view,
 		Tools:       a.Registry.Specs(),
 		Model:       a.Cfg.Model,
 		Temperature: a.Cfg.Temperature,
@@ -290,10 +303,12 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 		return nil, "", fmt.Errorf("agent: chat: %w", err)
 	}
 
-	newHistory := append(history, NewAssistantMessage(resp.Content, resp.ToolCalls))
+	// Append the assistant message. When the
+	// underlying array has cap to spare this is free.
+	history = append(history, NewAssistantMessage(resp.Content, resp.ToolCalls))
 
 	if len(resp.ToolCalls) == 0 {
-		return newHistory, resp.Content, nil
+		return history, resp.Content, nil
 	}
 
 	for _, call := range resp.ToolCalls {
@@ -301,9 +316,9 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 		if err != nil {
 			result = err.Error()
 		}
-		newHistory = append(newHistory, NewToolMessage(call.ID, call.Name, result))
+		history = append(history, NewToolMessage(call.ID, call.Name, result))
 	}
-	return newHistory, "", nil
+	return history, "", nil
 }
 
 // contextBudget returns the effective input-side token
