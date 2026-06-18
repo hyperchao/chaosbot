@@ -73,3 +73,5 @@ git diff --stat <prev-tag-or-commit>..HEAD -- ':!docs' ':!*.md' ':!*.yaml' ':!*.
 
 - [001](issues/001-session-save-duplicates.md) — Session save 失败导致偶发重复 message
   (Append 部分写入 + in-memory offset 未更新 → 下次 retry 重复)。MVP 接受。
+- [002](issues/002-repl-readline.md) — REPL 缺 readline (arrow keys, history, line editing)。
+  当前用 stdlib bufio.Scanner; 真实使用率上来再决定。
