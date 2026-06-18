@@ -82,6 +82,7 @@ type reActAgent struct {
 
 	sessionID     string
 	sessionOffset int
+	trimOffset    int // cached trim index: first trimOffset messages of a.History are known to exceed budget
 }
 
 // Resume implements Agent. Loads a saved session by id:
@@ -100,6 +101,7 @@ func (a *reActAgent) Resume(ctx context.Context, id string) error {
 		return fmt.Errorf("agent: resume %s: %w", id, err)
 	}
 	a.History = history
+	a.trimOffset = 0
 	a.sessionID = id
 	a.sessionOffset = len(history)
 	return nil
@@ -248,6 +250,7 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 // Store are unaffected.
 func (a *reActAgent) Reset() {
 	a.History = a.History[:0]
+	a.trimOffset = 0
 	if a.Store != nil && a.sessionID != "" {
 		_ = a.Store.Delete(context.Background(), a.sessionID)
 	}
@@ -275,18 +278,17 @@ func (a *reActAgent) Reset() {
 // Provider / Validate errors ARE returned as Go errors and
 // abort the loop; the caller surfaces them to the user.
 func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]provider.Message, string, error) {
-	// Apply the sliding window. When no windowing is
-	// needed, applyWindow returns `history` itself (no
-	// new array). When windowing drops turns, the
-	// returned slice is a sub-slice of `history` —
-	// still no new array, just a different start
-	// offset. Only dropOldestTurns's inner loop might
-	// allocate, and only when the cumulative history
-	// doesn't shrink fast enough.
+	// Apply the sliding window. The returned view is a
+	// sub-slice of history when windowing was needed; the
+	// trim is computed here but NOT committed until after
+	// all fallible operations succeed, so a failed step
+	// never leaves a.trimOffset out of sync with a.History.
 	view, err := a.applyWindow(ctx, history)
 	if err != nil {
 		return nil, "", err
 	}
+	trim := len(history) - len(view)
+
 	req := provider.Request{
 		System:      a.Cfg.System,
 		Messages:    view,
@@ -308,6 +310,7 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 	history = append(history, NewAssistantMessage(resp.Content, resp.ToolCalls))
 
 	if len(resp.ToolCalls) == 0 {
+		a.commitTrim(trim)
 		return history, resp.Content, nil
 	}
 
@@ -318,7 +321,16 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 		}
 		history = append(history, NewToolMessage(call.ID, call.Name, result))
 	}
+	a.commitTrim(trim)
 	return history, "", nil
+}
+
+// commitTrim advances a.trimOffset to reflect how many
+// messages from the head of history have been dropped by
+// the latest applyWindow. Called only after all fallible
+// operations in step succeed.
+func (a *reActAgent) commitTrim(trim int) {
+	a.trimOffset = min(trim, len(a.History))
 }
 
 // contextBudget returns the effective input-side token
@@ -381,12 +393,25 @@ func (a *reActAgent) estimateHistoryTokens(history []provider.Message) int {
 // that alone exceeds the budget is left for the
 // safety net. Summarization is a planned follow-up
 // (ADR-0002 "Future work").
+//
+// The agent caches the trim index so early history
+// isn't re-scanned on every step. Since both budget
+// and history grow monotonically, the trim point only
+// moves forward. The cache is invalidated by Reset
+// or Resume (budget never changes mid-session).
+// applyWindow returns a windowed view of history that fits
+// within the configured context budget. It reads a.trimOffset
+// as a starting hint but does NOT mutate it — the caller (step)
+// is responsible for committing the updated trim only after all
+// fallible operations (provider call, tool dispatch) succeed.
 func (a *reActAgent) applyWindow(_ context.Context, history []provider.Message) ([]provider.Message, error) {
 	budget := a.contextBudget()
-	if a.estimateHistoryTokens(history) <= budget {
-		return history, nil
+	start := min(a.trimOffset, len(history))
+	candidate := history[start:]
+	if a.estimateHistoryTokens(candidate) <= budget {
+		return candidate, nil
 	}
-	return dropOldestTurns(history, budget, a.estimateHistoryTokens), nil
+	return dropOldestTurns(candidate, budget, a.estimateHistoryTokens), nil
 }
 
 // dropOldestTurns removes whole turns from the head
