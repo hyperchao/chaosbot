@@ -306,10 +306,18 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 	return newHistory, "", nil
 }
 
-// contextBudget returns the effective token budget
-// (MaxContextTokens minus the safety margin). Values
-// are clamped: negative MaxContextTokens → 0, frac
-// outside [0,1) → nearest valid edge, final budget ≥ 0.
+// contextBudget returns the effective input-side token
+// budget. It starts from MaxContextTokens, applies the
+// safety margin, then subtracts MaxTokens so the output
+// reservation is honored (output also occupies the
+// context window on every mainstream LLM — the KV cache
+// holds the full sequence). MaxTokens ≤ 0 means "use
+// provider default"; we can't know that size, so we
+// don't try to subtract it. Users who hit output-side
+// limits under the default should set MaxTokens
+// explicitly. Values are clamped: negative
+// MaxContextTokens → 0, frac outside [0,1) → nearest
+// valid edge, final budget ≥ 0.
 func (a *reActAgent) contextBudget() int {
 	max := a.Cfg.MaxContextTokens
 	if max <= 0 {
@@ -324,6 +332,9 @@ func (a *reActAgent) contextBudget() int {
 		frac = defaultSafetyMarginFraction
 	}
 	budget := int(float64(max) * (1 - frac))
+	if a.Cfg.MaxTokens > 0 {
+		budget -= a.Cfg.MaxTokens
+	}
 	if budget < 0 {
 		budget = 0
 	}

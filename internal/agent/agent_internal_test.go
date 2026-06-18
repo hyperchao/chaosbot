@@ -412,3 +412,70 @@ func TestContextBudget_FracAboveOneClampsToDefault(t *testing.T) {
 		t.Errorf("contextBudget() = %d, want %d (frac>1 → default)", got, want)
 	}
 }
+
+// TestContextBudget_SubtractsMaxTokens verifies the output
+// reservation: with MaxTokens set, the input-side budget
+// is reduced by that amount. This matters because output
+// also occupies the context window (KV cache holds the
+// full sequence on every mainstream LLM), so without
+// this subtraction we'd happily send a near-max input and
+// trip the provider's combined input+output limit on
+// the response.
+func TestContextBudget_SubtractsMaxTokens(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 10_000
+	a.Cfg.SafetyMarginFraction = -1 // negative → clamped to 0, margin disabled
+	a.Cfg.MaxTokens = 2_000
+	got := a.contextBudget()
+	want := 8_000 // 10_000 − 2_000
+	if got != want {
+		t.Errorf("contextBudget() = %d, want %d (max − MaxTokens)", got, want)
+	}
+}
+
+// TestContextBudget_MaxTokensZeroNotSubtracted verifies
+// that MaxTokens ≤ 0 ("use provider default") does NOT
+// subtract anything — we don't know the provider's
+// default output size, so guessing would either
+// over-reserve (wasting context) or under-reserve
+// (re-introducing the bug). Users who need exact budgeting
+// should set MaxTokens explicitly.
+func TestContextBudget_MaxTokensZeroNotSubtracted(t *testing.T) {
+	cases := []struct {
+		name      string
+		maxTokens int
+	}{
+		{"unset (0)", 0},
+		{"negative (provider-default sentinel)", -1},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, _ := newTestAgent(t, nil)
+			a.Cfg.MaxContextTokens = 10_000
+			a.Cfg.SafetyMarginFraction = -1 // disable margin to make the math obvious
+			a.Cfg.MaxTokens = tc.maxTokens
+			got := a.contextBudget()
+			want := 10_000
+			if got != want {
+				t.Errorf("contextBudget() = %d, want %d (MaxTokens not subtracted)", got, want)
+			}
+		})
+	}
+}
+
+// TestContextBudget_MaxTokensLargerThanBudgetClampsToZero
+// verifies that if MaxTokens alone exceeds the margin-
+// adjusted budget, the final budget clamps to 0 instead
+// of going negative — applyWindow will then drop
+// everything it can but still leave the smallest single
+// turn for the safety net (existing behavior).
+func TestContextBudget_MaxTokensLargerThanBudgetClampsToZero(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.Cfg.MaxContextTokens = 1_000
+	a.Cfg.SafetyMarginFraction = 0
+	a.Cfg.MaxTokens = 5_000
+	got := a.contextBudget()
+	if got != 0 {
+		t.Errorf("contextBudget() = %d, want 0 (clamped)", got)
+	}
+}
