@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | Phase | `04-4c` |
-| Status | `⬜ not started` |
+| Status | `✅ complete (core done; proactive applyWindow edge-case tests deferred)` |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04-4 (sliding window), provider.ErrContextLength sentinel |
 | Estimated total LOC | ~120 Go + ~80 test |

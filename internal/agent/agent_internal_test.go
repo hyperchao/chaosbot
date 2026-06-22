@@ -10,6 +10,7 @@ import (
 	agentfake "chaosbot/internal/agent/fake"
 	"chaosbot/internal/provider"
 	providerfake "chaosbot/internal/provider/fake"
+	"chaosbot/internal/session"
 )
 
 // newTestAgent wires a minimal reActAgent backed by
@@ -477,5 +478,110 @@ func TestContextBudget_MaxTokensLargerThanBudgetClampsToZero(t *testing.T) {
 	got := a.contextBudget()
 	if got != 0 {
 		t.Errorf("contextBudget() = %d, want 0 (clamped)", got)
+	}
+}
+
+func TestSummarizeHistory_Basic(t *testing.T) {
+	a, fp := newTestAgent(t, nil)
+	fp.NextResp = &provider.Response{Content: "summarized early turns"}
+	hist := []provider.Message{
+		NewUserMessage("hello"),
+		NewAssistantMessage("world", nil),
+	}
+	msg, err := a.summarizeHistory(context.Background(), hist)
+	if err != nil {
+		t.Fatalf("summarizeHistory: %v", err)
+	}
+	if msg.Role != provider.RoleUser {
+		t.Errorf("msg.Role = %q, want user", msg.Role)
+	}
+	if msg.Content != "summarized early turns" {
+		t.Errorf("msg.Content = %q, want %q", msg.Content, "summarized early turns")
+	}
+}
+
+func TestSummarizeHistory_ProviderError(t *testing.T) {
+	a, fp := newTestAgent(t, nil)
+	fp.NextErr = errors.New("provider down")
+	_, err := a.summarizeHistory(context.Background(), []provider.Message{NewUserMessage("x")})
+	if err == nil {
+		t.Fatal("want error when provider fails")
+	}
+}
+
+func TestReset_ClearsSummaryFields(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.History = []provider.Message{NewUserMessage("old")}
+	a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: "summary"}
+	a.summaryCursor = 5
+	a.trimOffset = 3
+	a.Reset()
+	if a.summaryMsg != nil {
+		t.Errorf("summaryMsg = %v, want nil", a.summaryMsg)
+	}
+	if a.summaryCursor != 0 {
+		t.Errorf("summaryCursor = %d, want 0", a.summaryCursor)
+	}
+	if a.trimOffset != 0 {
+		t.Errorf("trimOffset = %d, want 0", a.trimOffset)
+	}
+}
+
+func TestResume_ClearsSummaryFields(t *testing.T) {
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := "session-with-summary"
+	fs.Append(context.Background(), id, []provider.Message{NewUserMessage("old")})
+	a := &reActAgent{
+		Provider: providerfake.New("test"),
+		Registry: NewRegistry(),
+		Cfg:      Config{},
+		Store:    fs,
+		summaryMsg:  &provider.Message{Role: provider.RoleUser, Content: "old summary"},
+		summaryCursor: 10,
+	}
+	err = a.Resume(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if a.summaryMsg != nil {
+		t.Errorf("summaryMsg = %v, want nil after Resume", a.summaryMsg)
+	}
+	if a.summaryCursor != 0 {
+		t.Errorf("summaryCursor = %d, want 0 after Resume", a.summaryCursor)
+	}
+}
+
+func TestSerializeHistoryFragment(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleUser, Content: "hello"},
+		{Role: provider.RoleAssistant, Content: "hi there", ToolCalls: []provider.ToolCall{
+			{ID: "call-1", Name: "echo", Arguments: json.RawMessage(`{}`)},
+		}},
+		{Role: provider.RoleTool, Content: "tool result", ToolCallID: "call-1"},
+	}
+	got := serializeHistoryFragment(msgs)
+	if !strings.Contains(got, "[user]: hello") {
+		t.Errorf("missing user line: %s", got)
+	}
+	if !strings.Contains(got, "[assistant]: hi there") {
+		t.Errorf("missing assistant line: %s", got)
+	}
+	if !strings.Contains(got, "[tool]: call-1/echo → {}") {
+		t.Errorf("missing tool-call line: %s", got)
+	}
+	if !strings.Contains(got, "[tool]: call-1 → tool result") {
+		t.Errorf("missing tool-result line: %s", got)
+	}
+}
+
+func TestSerializeHistoryFragment_Empty(t *testing.T) {
+	if serializeHistoryFragment(nil) != "" {
+		t.Errorf("nil slice → want empty string")
+	}
+	if serializeHistoryFragment([]provider.Message{}) != "" {
+		t.Errorf("empty slice → want empty string")
 	}
 }

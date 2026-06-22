@@ -34,7 +34,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 04-2  | agent loop 单步逻辑 | ✅ | 06-03 | 06-03 | 68 | 6/6 | `step` 改 `step(ctx, history)`,无 userMsg;bug 抓 tool error 必须嵌 message;fake 抽到 `provider/fake/` |
 | 04-3  | Agent struct + 终止条件 + 集成测 | ✅ | 06-03 | 06-03 | ~80 | 4/4 | `Run` + `MaxSteps` + `ErrMaxSteps`;fake 扩 Script/AllReqs 队列;测合并到 4 个 |
 | 04-4  | context window 滑动窗口 + token 估算 | ✅ | 06-16 | 06-16 | ~260 | 8/8 | `applyWindow`/`dropOldestTurns`;`contextBudget` 防御性 clamp;`estimateHistoryTokens` zero-alloc unsafe;`EstimateTokensDefault` zero-alloc CJK;Config +2 字段;ADR-0002 更新 |
-| 04-4b | safety net + LLM summarization | ⬜ | | | | | spec 04-4c 已写;等 Phase 06 持久化后一起做 |
+| 04-4b/c | safety net + LLM summarization | ✅ | 06-21 | 06-21 | ~160 | 10/11 | `SummaryEnabled` cfg;`summaryMsg`/`summaryCursor`;`serializeHistoryFragment`;`summarizeHistory`;proactive applyWindow;reactive ErrContextLength retry;Reset/Resume clear summary |
 | 05-1  | tools/fs.read_file | ✅ | 06-14 | 06-14 | ~340 | 6/6 | `internal/tools/fs/read_file.go` 158 + test 180;`bufio.Scanner` token 1 MiB;`cat -n` 输出;`*os.PathError` 透传;binary sniff 512 B;见 phase-05 实现笔记 05-1 |
 | 05-2  | tools/fs.write_file | ✅ | 06-15 | 06-15 | ~290 | 9/9 | `writeFileAtomic` tmp+fsync+rename 原子写;父目录 `MkdirAll`;tmp 0600;`%w` wrap `*os.PathError` 透传;failure path 留原文件不动 |
 | 05-3  | tools/fs.edit_file | ✅ | 06-15 | 06-15 | ~300 | 8/8 | strict unique-anchor(0 或 N>1 都返错,error 带前 5 个 offsets);`writeFileAtomic` 复用;empty `old_text` 拒绝(防 infinite match);empty `new_text` 删 anchor |

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"unsafe"
 
 	"chaosbot/internal/provider"
@@ -50,6 +51,7 @@ type Config struct {
 	MaxSteps             int
 	MaxContextTokens     int
 	SafetyMarginFraction float64
+	SummaryEnabled       bool
 }
 
 // reActAgent is the concrete ReAct implementation. The TYPE
@@ -74,11 +76,13 @@ type Config struct {
 // is nil the agent runs in pure in-memory mode with no
 // auto-save.
 type reActAgent struct {
-	Provider provider.Provider `di:"type"`
-	Registry *Registry         `di:"type"`
-	Cfg      Config            `di:"type"`
-	Store    session.Store     `di:"type"`
-	History  []provider.Message
+	Provider      provider.Provider `di:"type"`
+	Registry      *Registry         `di:"type"`
+	Cfg           Config            `di:"type"`
+	Store         session.Store     `di:"type"`
+	History       []provider.Message
+	summaryMsg    *provider.Message // nil if never summarized
+	summaryCursor int               // index into History: summary covers [0, cursor); 0 if no summary
 
 	sessionID     string
 	sessionOffset int
@@ -101,6 +105,8 @@ func (a *reActAgent) Resume(ctx context.Context, id string) error {
 		return fmt.Errorf("agent: resume %s: %w", id, err)
 	}
 	a.History = history
+	a.summaryMsg = nil
+	a.summaryCursor = 0
 	a.trimOffset = 0
 	a.sessionID = id
 	a.sessionOffset = len(history)
@@ -148,6 +154,10 @@ const defaultMaxContextTokens = 128_000
 // against heuristic inaccuracy. 10% is well above
 // the ±20% error of EstimateTokensDefault.
 const defaultSafetyMarginFraction = 0.10
+
+const summarizePrompt = `Summarize the following conversation fragment concisely.
+Preserve: file paths, key decisions, current task state, errors.
+Output only the summary, no preamble.`
 
 // Run implements Agent. It drives the ReAct loop up to
 // MaxSteps times on top of the agent's history. The user
@@ -205,6 +215,18 @@ func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 		// view + newHistory per step.
 		history, final, stepErr = a.step(ctx, history)
 		if stepErr != nil {
+			if errors.Is(stepErr, provider.ErrContextLength) {
+				summary, sErr := a.summarizeHistory(ctx, history)
+				if sErr != nil {
+					a.History = a.History[:0]
+					return "", fmt.Errorf("context too long, history cleared: %w", stepErr)
+				}
+				a.summaryMsg = &summary
+				a.summaryCursor = len(history)
+				a.trimOffset = len(history) // summary already covers this prefix
+				history = []provider.Message{summary}
+				continue
+			}
 			return "", stepErr
 		}
 		if final != "" {
@@ -250,6 +272,8 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 // Store are unaffected.
 func (a *reActAgent) Reset() {
 	a.History = a.History[:0]
+	a.summaryMsg = nil
+	a.summaryCursor = 0
 	a.trimOffset = 0
 	if a.Store != nil && a.sessionID != "" {
 		_ = a.Store.Delete(context.Background(), a.sessionID)
@@ -333,6 +357,28 @@ func (a *reActAgent) commitTrim(trim int) {
 	a.trimOffset = min(trim, len(a.History))
 }
 
+// summarizeHistory calls the LLM to summarize the given
+// messages into a single user-role summary message. The
+// caller decides where to place the summary in history.
+// Returns the summary as a RoleUser message.
+func (a *reActAgent) summarizeHistory(ctx context.Context, history []provider.Message) (provider.Message, error) {
+	fragment := serializeHistoryFragment(history)
+	req := provider.Request{
+		System:    summarizePrompt,
+		Messages:  []provider.Message{NewUserMessage(fragment)},
+		Model:     a.Cfg.Model,
+		MaxTokens: 1024,
+	}
+	if err := req.Validate(); err != nil {
+		return provider.Message{}, fmt.Errorf("agent: summarize request: %w", err)
+	}
+	resp, err := a.Provider.Chat(ctx, req)
+	if err != nil {
+		return provider.Message{}, fmt.Errorf("agent: summarize: %w", err)
+	}
+	return provider.Message{Role: provider.RoleUser, Content: resp.Content}, nil
+}
+
 // contextBudget returns the effective input-side token
 // budget. It starts from MaxContextTokens, applies the
 // safety margin, then subtracts MaxTokens so the output
@@ -391,25 +437,57 @@ func (a *reActAgent) estimateHistoryTokens(history []provider.Message) int {
 // fits within the configured context budget; oldest
 // whole turns are dropped otherwise. A single turn
 // that alone exceeds the budget is left for the
-// safety net. Summarization is a planned follow-up
-// (ADR-0002 "Future work").
+// safety net.
+//
+// The second layer of context management: when the sliding window
+// alone would drop turns, summarization (if SummaryEnabled) preserves
+// information from those turns before they are dropped.
 //
 // The agent caches the trim index so early history
 // isn't re-scanned on every step. Since both budget
 // and history grow monotonically, the trim point only
 // moves forward. The cache is invalidated by Reset
 // or Resume (budget never changes mid-session).
-// applyWindow returns a windowed view of history that fits
-// within the configured context budget. It reads a.trimOffset
-// as a starting hint but does NOT mutate it — the caller (step)
-// is responsible for committing the updated trim only after all
-// fallible operations (provider call, tool dispatch) succeed.
-func (a *reActAgent) applyWindow(_ context.Context, history []provider.Message) ([]provider.Message, error) {
+func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message) ([]provider.Message, error) {
 	budget := a.contextBudget()
 	start := min(a.trimOffset, len(history))
 	candidate := history[start:]
 	if a.estimateHistoryTokens(candidate) <= budget {
 		return candidate, nil
+	}
+	// Budget exceeded. Try summarizing the early half first.
+	// Split at the last complete turn boundary at or before
+	// the midpoint of history — this preserves turn integrity
+	// so the LLM receives coherent user+assistant+tool sequences.
+	if a.Cfg.SummaryEnabled {
+		ends := turnEnds(history)
+		target := len(history) / 2
+		split := 0
+		for _, end := range ends {
+			if end <= target {
+				split = end
+			} else {
+				break
+			}
+		}
+		if split == 0 && len(ends) > 0 {
+			split = ends[len(ends)-1]
+		}
+		early := history[:split]
+		recent := history[split:]
+		summary, err := a.summarizeHistory(ctx, early)
+		if err == nil {
+			a.summaryMsg = &summary
+			a.summaryCursor = split
+			a.trimOffset = split
+			candidateWithSummary := append([]provider.Message{summary}, recent...)
+			if a.estimateHistoryTokens(candidateWithSummary) <= budget {
+				return candidateWithSummary, nil
+			}
+			// Summary still too big — return recent only without it.
+		}
+		// Summarization failed (provider error, ctx cancel).
+		// Fall back to plain dropping.
 	}
 	return dropOldestTurns(candidate, budget, a.estimateHistoryTokens), nil
 }
@@ -447,4 +525,74 @@ func turnEnd(history []provider.Message) int {
 		}
 	}
 	return -1
+}
+
+// turnEnds returns the indices of all user messages that
+// terminate a turn — i.e., every user message that has another
+// user message after it. These are valid split points that
+// preserve turn integrity when dividing history.
+func turnEnds(history []provider.Message) []int {
+	var ends []int
+	seen := 0
+	for i, m := range history {
+		if m.Role == provider.RoleUser {
+			if seen == 1 {
+				ends = append(ends, i)
+			}
+			seen = 1
+		}
+	}
+	return ends
+}
+
+// serializeHistoryFragment formats the given messages as a
+// plain-text string suitable for passing to an LLM as the
+// summarization input. No JSON; just role-prefixed lines.
+func serializeHistoryFragment(msgs []provider.Message) string {
+	if len(msgs) == 0 {
+		return ""
+	}
+	var b strings.Builder
+	b.Grow(len(msgs) * 64) // heuristic: avoid early reallocation
+	const sep = "\n"
+	for _, m := range msgs {
+		if m.Role == provider.RoleTool {
+			b.WriteString("[tool]: ")
+			b.WriteString(m.ToolCallID)
+			b.WriteString(" → ")
+			b.WriteString(m.Content)
+			b.WriteString(sep)
+		} else {
+			b.WriteString(roleTag(m.Role))
+			b.WriteString(": ")
+			b.WriteString(m.Content)
+			b.WriteString(sep)
+		}
+		for _, tc := range m.ToolCalls {
+			b.WriteString("[tool]: ")
+			b.WriteString(tc.ID)
+			b.WriteByte('/')
+			b.WriteString(tc.Name)
+			b.WriteString(" → ")
+			b.Write(tc.Arguments)
+			b.WriteString(sep)
+		}
+	}
+	return b.String()
+}
+
+// roleTag returns the human-readable tag for a message role.
+func roleTag(role provider.Role) string {
+	switch role {
+	case provider.RoleUser:
+		return "[user]"
+	case provider.RoleAssistant:
+		return "[assistant]"
+	case provider.RoleTool:
+		return "[tool]"
+	case provider.RoleSystem:
+		return "[system]"
+	default:
+		return "[unknown]"
+	}
 }
