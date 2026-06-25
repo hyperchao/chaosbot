@@ -316,7 +316,7 @@ func TestApplyWindow_NoOpWhenUnderBudget(t *testing.T) {
 		NewUserMessage("hi"),
 		NewAssistantMessage("ok", nil),
 	}
-	out, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -341,7 +341,7 @@ func TestApplyWindow_DropsOldestTurn(t *testing.T) {
 		NewUserMessage(big),
 		NewAssistantMessage("a3", nil),
 	}
-	out, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -361,7 +361,7 @@ func TestApplyWindow_NoOpWhenMaxContextTokensIsZero(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.Cfg.MaxContextTokens = 0 // unset
 	hist := []provider.Message{NewUserMessage("hi"), NewAssistantMessage("ok", nil)}
-	out, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -513,14 +513,10 @@ func TestReset_ClearsSummaryFields(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.History = []provider.Message{NewUserMessage("old")}
 	a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: "summary"}
-	a.summaryCursor = 5
 	a.trimOffset = 3
 	a.Reset()
 	if a.summaryMsg != nil {
 		t.Errorf("summaryMsg = %v, want nil", a.summaryMsg)
-	}
-	if a.summaryCursor != 0 {
-		t.Errorf("summaryCursor = %d, want 0", a.summaryCursor)
 	}
 	if a.trimOffset != 0 {
 		t.Errorf("trimOffset = %d, want 0", a.trimOffset)
@@ -535,12 +531,11 @@ func TestResume_ClearsSummaryFields(t *testing.T) {
 	id := "session-with-summary"
 	fs.Append(context.Background(), id, []provider.Message{NewUserMessage("old")})
 	a := &reActAgent{
-		Provider: providerfake.New("test"),
-		Registry: NewRegistry(),
-		Cfg:      Config{},
-		Store:    fs,
-		summaryMsg:  &provider.Message{Role: provider.RoleUser, Content: "old summary"},
-		summaryCursor: 10,
+		Provider:   providerfake.New("test"),
+		Registry:   NewRegistry(),
+		Cfg:        Config{},
+		Store:      fs,
+		summaryMsg: &provider.Message{Role: provider.RoleUser, Content: "old summary"},
 	}
 	err = a.Resume(context.Background(), id)
 	if err != nil {
@@ -548,9 +543,6 @@ func TestResume_ClearsSummaryFields(t *testing.T) {
 	}
 	if a.summaryMsg != nil {
 		t.Errorf("summaryMsg = %v, want nil after Resume", a.summaryMsg)
-	}
-	if a.summaryCursor != 0 {
-		t.Errorf("summaryCursor = %d, want 0 after Resume", a.summaryCursor)
 	}
 }
 

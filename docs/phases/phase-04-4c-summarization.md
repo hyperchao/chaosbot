@@ -277,3 +277,33 @@ view = [summaryMsg] + a.History[a.summaryCursor:]
 - Configurable summary prompt (hardcoded for now)
 - Session save/load implementation (Phase 06; this spec defines the
   data structures and logic, Phase 06 implements the file I/O)
+
+## 实现笔记
+
+### trim 返回值简化 (06-25)
+
+Spec defined `a.summaryCursor int` as both a trim index AND a flag (non-zero meant
+"summary applied"). This caused confusion: proactive path set it, step read it and
+used `trim` directly (correct), but the reactive path in `Run` also set it without
+`step` ever reading it.
+
+**Fix**: `applyWindow` now returns `(view, trim, error)`. `trim` is always correct —
+it's computed as `len(history) - len(view)`. `summaryCursor` field is removed. `step`
+always uses the returned `trim` and calls `commitTrim(trim)`. The reactive path
+(`Run`) still sets `a.summaryMsg` but no longer sets any cursor; `trimOffset` is
+updated via the returned `trim` from `step`'s `applyWindow` call.
+
+**Before**:
+```go
+// applyWindow: set a.summaryCursor = split (proactive) or len(history) (reactive)
+// step: if a.summaryCursor > 0 { a.trimOffset = a.summaryCursor; a.summaryCursor = 0 } else { commitTrim(trim) }
+```
+
+**After**:
+```go
+// applyWindow: returns (view, trim, error) where trim = len(history) - len(view)
+// step: always commitTrim(trim)
+```
+
+`summaryMsg` is still set (both proactive and reactive) for potential future use
+(e.g., persistence), but is not used during the current session's step loop.

@@ -76,13 +76,12 @@ type Config struct {
 // is nil the agent runs in pure in-memory mode with no
 // auto-save.
 type reActAgent struct {
-	Provider      provider.Provider `di:"type"`
-	Registry      *Registry         `di:"type"`
-	Cfg           Config            `di:"type"`
-	Store         session.Store     `di:"type"`
-	History       []provider.Message
-	summaryMsg    *provider.Message // nil if never summarized
-	summaryCursor int               // index into History: summary covers [0, cursor); 0 if no summary
+	Provider   provider.Provider `di:"type"`
+	Registry   *Registry         `di:"type"`
+	Cfg        Config            `di:"type"`
+	Store      session.Store     `di:"type"`
+	History    []provider.Message
+	summaryMsg *provider.Message // nil if never summarized; set by proactive or reactive summary
 
 	sessionID     string
 	sessionOffset int
@@ -106,7 +105,6 @@ func (a *reActAgent) Resume(ctx context.Context, id string) error {
 	}
 	a.History = history
 	a.summaryMsg = nil
-	a.summaryCursor = 0
 	a.trimOffset = 0
 	a.sessionID = id
 	a.sessionOffset = len(history)
@@ -222,8 +220,7 @@ func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 					return "", fmt.Errorf("context too long, history cleared: %w", stepErr)
 				}
 				a.summaryMsg = &summary
-				a.summaryCursor = len(history)
-				a.trimOffset = len(history) // summary already covers this prefix
+				a.trimOffset = len(history)
 				history = []provider.Message{summary}
 				continue
 			}
@@ -273,7 +270,6 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 func (a *reActAgent) Reset() {
 	a.History = a.History[:0]
 	a.summaryMsg = nil
-	a.summaryCursor = 0
 	a.trimOffset = 0
 	if a.Store != nil && a.sessionID != "" {
 		_ = a.Store.Delete(context.Background(), a.sessionID)
@@ -303,15 +299,13 @@ func (a *reActAgent) Reset() {
 // abort the loop; the caller surfaces them to the user.
 func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]provider.Message, string, error) {
 	// Apply the sliding window. The returned view is a
-	// sub-slice of history when windowing was needed; the
-	// trim is computed here but NOT committed until after
-	// all fallible operations succeed, so a failed step
-	// never leaves a.trimOffset out of sync with a.History.
-	view, err := a.applyWindow(ctx, history)
+	// sub-slice of history when windowing was needed; trim
+	// is committed only after all fallible operations succeed,
+	// so a failed step never leaves a.trimOffset out of sync.
+	view, trim, err := a.applyWindow(ctx, history)
 	if err != nil {
 		return nil, "", err
 	}
-	trim := len(history) - len(view)
 
 	req := provider.Request{
 		System:      a.Cfg.System,
@@ -443,25 +437,27 @@ func (a *reActAgent) estimateHistoryTokens(history []provider.Message) int {
 // alone would drop turns, summarization (if SummaryEnabled) preserves
 // information from those turns before they are dropped.
 //
-// The agent caches the trim index so early history
+// Returns (view, trim). trim is the number of messages dropped
+// from the head of history so the caller can commit the trim
+// offset. The agent caches the trim index so early history
 // isn't re-scanned on every step. Since both budget
 // and history grow monotonically, the trim point only
 // moves forward. The cache is invalidated by Reset
 // or Resume (budget never changes mid-session).
-func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message) ([]provider.Message, error) {
+func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message) ([]provider.Message, int, error) {
 	budget := a.contextBudget()
 	start := min(a.trimOffset, len(history))
 	candidate := history[start:]
 	if a.estimateHistoryTokens(candidate) <= budget {
-		return candidate, nil
+		return candidate, start, nil
 	}
-	// Budget exceeded. Try summarizing the early half first.
+	// Budget exceeded. Try summarizing the early half of candidate first.
 	// Split at the last complete turn boundary at or before
-	// the midpoint of history — this preserves turn integrity
+	// the midpoint of candidate — this preserves turn integrity
 	// so the LLM receives coherent user+assistant+tool sequences.
 	if a.Cfg.SummaryEnabled {
-		ends := turnEnds(history)
-		target := len(history) / 2
+		ends := turnEnds(candidate)
+		target := len(candidate) / 2
 		split := 0
 		for _, end := range ends {
 			if end <= target {
@@ -473,23 +469,26 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 		if split == 0 && len(ends) > 0 {
 			split = ends[len(ends)-1]
 		}
-		early := history[:split]
-		recent := history[split:]
-		summary, err := a.summarizeHistory(ctx, early)
+		early := candidate[:split]
+		recent := candidate[split:]
+		toSummarize := early
+		if a.summaryMsg != nil {
+			toSummarize = append([]provider.Message{*a.summaryMsg}, early...)
+		}
+		summary, err := a.summarizeHistory(ctx, toSummarize)
 		if err == nil {
 			a.summaryMsg = &summary
-			a.summaryCursor = split
-			a.trimOffset = split
 			candidateWithSummary := append([]provider.Message{summary}, recent...)
 			if a.estimateHistoryTokens(candidateWithSummary) <= budget {
-				return candidateWithSummary, nil
+				return candidateWithSummary, start + split, nil
 			}
 			// Summary still too big — return recent only without it.
 		}
 		// Summarization failed (provider error, ctx cancel).
 		// Fall back to plain dropping.
 	}
-	return dropOldestTurns(candidate, budget, a.estimateHistoryTokens), nil
+	result := dropOldestTurns(candidate, budget, a.estimateHistoryTokens)
+	return result, len(history) - len(result), nil
 }
 
 // dropOldestTurns removes whole turns from the head
