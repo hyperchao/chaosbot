@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"os"
 	"strings"
 	"unsafe"
 
@@ -51,7 +53,7 @@ type Config struct {
 	MaxSteps             int
 	MaxContextTokens     int
 	SafetyMarginFraction float64
-	SummaryEnabled       bool
+	SummaryDisabled      bool // opt-out: true disables LLM summarization (default false = enabled)
 }
 
 // reActAgent is the concrete ReAct implementation. The TYPE
@@ -76,16 +78,18 @@ type Config struct {
 // is nil the agent runs in pure in-memory mode with no
 // auto-save.
 type reActAgent struct {
-	Provider   provider.Provider `di:"type"`
-	Registry   *Registry         `di:"type"`
-	Cfg        Config            `di:"type"`
-	Store      session.Store     `di:"type"`
-	History    []provider.Message
-	summaryMsg *provider.Message // nil if never summarized; set by proactive or reactive summary
+	Provider        provider.Provider `di:"type"`
+	Registry        *Registry         `di:"type"`
+	Cfg             Config            `di:"type"`
+	Store           session.Store     `di:"type"`
+	History         []provider.Message
+	summaryMsg      *provider.Message // nil if never summarized
+	committedPrefix int               // count of leading messages from a.History
+	// already represented by summaryMsg (if set)
+	// or just trimmed away
 
 	sessionID     string
 	sessionOffset int
-	trimOffset    int // cached trim index: first trimOffset messages of a.History are known to exceed budget
 }
 
 // Resume implements Agent. Loads a saved session by id:
@@ -105,7 +109,20 @@ func (a *reActAgent) Resume(ctx context.Context, id string) error {
 	}
 	a.History = history
 	a.summaryMsg = nil
-	a.trimOffset = 0
+	a.committedPrefix = 0
+	info, err := a.Store.LoadSummary(ctx, id)
+	switch {
+	case err == nil:
+		if info.Cursor > 0 && info.Cursor <= len(history) {
+			a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: info.Content}
+			a.committedPrefix = info.Cursor
+		}
+		// Stale cursor (info.Cursor > len(history)): discard summary.
+	case errors.Is(err, os.ErrNotExist):
+		// No summary yet — fine.
+	default:
+		return fmt.Errorf("agent: resume %s summary: %w", id, err)
+	}
 	a.sessionID = id
 	a.sessionOffset = len(history)
 	return nil
@@ -199,39 +216,36 @@ func (a *reActAgent) Run(ctx context.Context, prompt string) (string, error) {
 	if max <= 0 {
 		max = defaultMaxSteps
 	}
-	var final string
-	var stepErr error
-	for i := 0; i < max; i++ {
+	var (
+		newHistory []provider.Message
+		final      string
+		stepErr    error
+	)
+	forceCompress := false
+	for i := 0; i < max && stepErr == nil && final == ""; i++ {
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		// step takes the cumulative history, applies the
-		// window internally for the LLM call, appends the
-		// assistant + tool messages, and returns the
-		// updated history. This keeps a single growing
-		// backing array instead of allocating a fresh
-		// view + newHistory per step.
-		history, final, stepErr = a.step(ctx, history)
-		if stepErr != nil {
-			if errors.Is(stepErr, provider.ErrContextLength) {
-				summary, sErr := a.summarizeHistory(ctx, history)
-				if sErr != nil {
-					a.History = a.History[:0]
-					return "", fmt.Errorf("context too long, history cleared: %w", stepErr)
-				}
-				a.summaryMsg = &summary
-				a.trimOffset = len(history)
-				history = []provider.Message{summary}
-				continue
-			}
-			return "", stepErr
+		newHistory, final, stepErr = a.step(ctx, history, forceCompress)
+		if errors.Is(stepErr, provider.ErrContextLength) {
+			forceCompress = true
+			stepErr = nil
+			continue
 		}
-		if final != "" {
-			a.History = history
-			a.saveOnSuccess(ctx, history)
-			return final, nil
-		}
+		history = newHistory
+		forceCompress = false
 	}
+
+	if stepErr != nil {
+		return "", stepErr
+	}
+
+	if final != "" {
+		a.History = history
+		a.saveOnSuccess(ctx, history)
+		return final, nil
+	}
+
 	return "", fmt.Errorf("agent: %d steps exhausted: %w", max, ErrMaxSteps)
 }
 
@@ -258,6 +272,19 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 	if err := a.Store.Append(ctx, a.sessionID, history[a.sessionOffset:]); err != nil {
 		return
 	}
+	if a.summaryMsg != nil {
+		// Best-effort: summary persistence failure doesn't roll
+		// back the history append. Worst case: Resume loses the
+		// summary and re-summarizes lazily.
+		tokens := provider.EstimateTokensDefault(a.summaryMsg.Content)
+		if err := a.Store.SaveSummary(ctx, a.sessionID, session.SummaryInfo{
+			Content: a.summaryMsg.Content,
+			Cursor:  a.committedPrefix,
+			Tokens:  tokens,
+		}); err != nil {
+			slog.Warn("saveOnSuccess: SaveSummary failed", "err", err, "sessionID", a.sessionID)
+		}
+	}
 	a.sessionOffset = len(history)
 }
 
@@ -270,7 +297,7 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 func (a *reActAgent) Reset() {
 	a.History = a.History[:0]
 	a.summaryMsg = nil
-	a.trimOffset = 0
+	a.committedPrefix = 0
 	if a.Store != nil && a.sessionID != "" {
 		_ = a.Store.Delete(context.Background(), a.sessionID)
 	}
@@ -297,12 +324,17 @@ func (a *reActAgent) Reset() {
 // the error string) so the LLM can decide how to react.
 // Provider / Validate errors ARE returned as Go errors and
 // abort the loop; the caller surfaces them to the user.
-func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]provider.Message, string, error) {
+//
+// When forceCompress is true, the budget check is skipped: the
+// view is always compressed (via summarize or dropOldestTurns)
+// before being sent to the LLM. Used by the reactive path when
+// the previous step returned ErrContextLength.
+func (a *reActAgent) step(ctx context.Context, history []provider.Message, forceCompress bool) ([]provider.Message, string, error) {
 	// Apply the sliding window. The returned view is a
 	// sub-slice of history when windowing was needed; trim
 	// is committed only after all fallible operations succeed,
-	// so a failed step never leaves a.trimOffset out of sync.
-	view, trim, err := a.applyWindow(ctx, history)
+	// so a failed step never leaves a.committedPrefix out of sync.
+	view, trim, err := a.applyWindow(ctx, history, forceCompress)
 	if err != nil {
 		return nil, "", err
 	}
@@ -343,20 +375,27 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message) ([]pr
 	return history, "", nil
 }
 
-// commitTrim advances a.trimOffset to reflect how many
+// commitTrim advances a.committedPrefix to reflect how many
 // messages from the head of history have been dropped by
 // the latest applyWindow. Called only after all fallible
 // operations in step succeed.
 func (a *reActAgent) commitTrim(trim int) {
-	a.trimOffset = min(trim, len(a.History))
+	a.committedPrefix = min(trim, len(a.History))
 }
 
 // summarizeHistory calls the LLM to summarize the given
 // messages into a single user-role summary message. The
 // caller decides where to place the summary in history.
+// If a.summaryMsg is non-nil it is prepended to history so
+// the LLM has the prior summary as context and the new
+// summary is incremental rather than recomputing from scratch.
 // Returns the summary as a RoleUser message.
 func (a *reActAgent) summarizeHistory(ctx context.Context, history []provider.Message) (provider.Message, error) {
-	fragment := serializeHistoryFragment(history)
+	msgs := history
+	if a.summaryMsg != nil {
+		msgs = append([]provider.Message{*a.summaryMsg}, history...)
+	}
+	fragment := serializeHistoryFragment(msgs)
 	req := provider.Request{
 		System:    summarizePrompt,
 		Messages:  []provider.Message{NewUserMessage(fragment)},
@@ -427,6 +466,14 @@ func (a *reActAgent) estimateHistoryTokens(history []provider.Message) int {
 	return total
 }
 
+// summaryEnabled returns whether LLM-based summarization is
+// active. The field is interpreted as an opt-out: zero
+// (unset) means enabled, matching the spec ("default true;
+// false disables summarization").
+func (a *reActAgent) summaryEnabled() bool {
+	return !a.Cfg.SummaryDisabled
+}
+
 // applyWindow returns a windowed view of history that
 // fits within the configured context budget; oldest
 // whole turns are dropped otherwise. A single turn
@@ -434,28 +481,36 @@ func (a *reActAgent) estimateHistoryTokens(history []provider.Message) int {
 // safety net.
 //
 // The second layer of context management: when the sliding window
-// alone would drop turns, summarization (if SummaryEnabled) preserves
+// alone would drop turns, summarization (if !SummaryDisabled) preserves
 // information from those turns before they are dropped.
 //
-// Returns (view, trim). trim is the number of messages dropped
-// from the head of history so the caller can commit the trim
-// offset. The agent caches the trim index so early history
-// isn't re-scanned on every step. Since both budget
-// and history grow monotonically, the trim point only
-// moves forward. The cache is invalidated by Reset
-// or Resume (budget never changes mid-session).
-func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message) ([]provider.Message, int, error) {
+// When forceCompress is true, the budget check is bypassed: the
+// view is always compressed (via summarize or dropOldestTurns)
+// before returning. Used by the reactive ErrContextLength path
+// to retry without re-checking budget.
+//
+// Returns (view, trim). trim is the count of leading messages
+// from history that the view excludes — the caller commits it
+// as a.committedPrefix. The committedPrefix cache means early
+// history isn't re-scanned on every step; it moves forward
+// monotonically since budget is fixed mid-session. Reset and
+// Resume clear it.
+func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message, forceCompress bool) ([]provider.Message, int, error) {
 	budget := a.contextBudget()
-	start := min(a.trimOffset, len(history))
+	start := min(a.committedPrefix, len(history))
 	candidate := history[start:]
-	if a.estimateHistoryTokens(candidate) <= budget {
-		return candidate, start, nil
+	view := candidate
+	if a.summaryMsg != nil && a.committedPrefix > 0 {
+		view = append([]provider.Message{*a.summaryMsg}, candidate...)
+	}
+	if !forceCompress && a.estimateHistoryTokens(view) <= budget {
+		return view, start, nil
 	}
 	// Budget exceeded. Try summarizing the early half of candidate first.
 	// Split at the last complete turn boundary at or before
 	// the midpoint of candidate — this preserves turn integrity
 	// so the LLM receives coherent user+assistant+tool sequences.
-	if a.Cfg.SummaryEnabled {
+	if !a.Cfg.SummaryDisabled {
 		ends := turnEnds(candidate)
 		target := len(candidate) / 2
 		split := 0
@@ -471,18 +526,18 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 		}
 		early := candidate[:split]
 		recent := candidate[split:]
-		toSummarize := early
-		if a.summaryMsg != nil {
-			toSummarize = append([]provider.Message{*a.summaryMsg}, early...)
-		}
-		summary, err := a.summarizeHistory(ctx, toSummarize)
+		summary, err := a.summarizeHistory(ctx, early)
 		if err == nil {
 			a.summaryMsg = &summary
+			a.committedPrefix = start + split
 			candidateWithSummary := append([]provider.Message{summary}, recent...)
 			if a.estimateHistoryTokens(candidateWithSummary) <= budget {
 				return candidateWithSummary, start + split, nil
 			}
 			// Summary still too big — return recent only without it.
+			// Don't commit committedPrefix: the summary is being
+			// discarded, so nothing was actually summarized.
+			a.summaryMsg = nil
 		}
 		// Summarization failed (provider error, ctx cancel).
 		// Fall back to plain dropping.

@@ -58,7 +58,8 @@ internal/session/              JSON session persistence
 internal/ui/                   CLI/REPL rendering
 docs/                          Specs (SPEC.md, architecture.md,
                                performance.md, progress.md), ADRs,
-                               and one phase-NN-*.md per phase
+                               issues/ (open issues), and one
+                               phase-NN-*.md per phase
 scripts/                       Measurement scripts (measure.sh)
 ```
 

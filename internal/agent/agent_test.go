@@ -469,3 +469,194 @@ func TestAgent_Run_WindowingDoesNotBreakSessionOffset(t *testing.T) {
 		t.Errorf("len(history) = %d, want 10 (5 turns × 2 messages)", len(hist))
 	}
 }
+
+// TestResume_RestoresSummary verifies a persisted summary is
+// visible to the LLM on the next Run: the provider sees
+// [summaryMsg] + history[summaryCursor:] on its first Chat call.
+func TestResume_RestoresSummary(t *testing.T) {
+	fp := providerfake.New("res-sum")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	// 6 messages of history; summary covers first 2.
+	hist := []provider.Message{
+		{Role: provider.RoleUser, Content: "first"},
+		{Role: provider.RoleAssistant, Content: "first-reply"},
+		{Role: provider.RoleUser, Content: "second"},
+		{Role: provider.RoleAssistant, Content: "second-reply"},
+		{Role: provider.RoleUser, Content: "third"},
+		{Role: provider.RoleAssistant, Content: "third-reply"},
+	}
+	if err := fs.Append(ctx, "sess-sum", hist); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.SaveSummary(ctx, "sess-sum", session.SummaryInfo{
+		Content: "EARLY SUMMARY",
+		Cursor:  2,
+		Tokens:  3,
+	}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if err := a.Resume(ctx, "sess-sum"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := a.Run(ctx, "new"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fp.AllReqs) != 1 {
+		t.Fatalf("AllReqs len = %d, want 1", len(fp.AllReqs))
+	}
+	msgs := fp.AllReqs[0].Messages
+	// Cumulative history = 6 (loaded) + 1 (new user prompt) = 7.
+	// summary covers first 2 → view = [summary, history[2:] of cumulative]
+	//                   = [summary, second, second-reply, third, third-reply, new]
+	//                   = 6 messages.
+	if len(msgs) != 6 {
+		t.Fatalf("msgs len = %d, want 6 (summary + history[cursor:] + new user msg)", len(msgs))
+	}
+	if msgs[0].Content != "EARLY SUMMARY" {
+		t.Errorf("msgs[0] = %q, want EARLY SUMMARY", msgs[0].Content)
+	}
+	if msgs[1].Content != "second" || msgs[2].Content != "second-reply" {
+		t.Errorf("msgs[1..] = %+v, want second/second-reply/...", msgs)
+	}
+}
+
+// TestResume_StaleSummary_Discarded verifies a summary whose
+// Cursor > len(history) (stale, e.g. session was truncated
+// externally) is silently dropped — not surfaced to the LLM.
+func TestResume_StaleSummary_Discarded(t *testing.T) {
+	fp := providerfake.New("res-stale")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	hist := []provider.Message{
+		{Role: provider.RoleUser, Content: "only"},
+		{Role: provider.RoleAssistant, Content: "reply"},
+	}
+	if err := fs.Append(ctx, "stale", hist); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Cursor=10 > len(history)=2: stale.
+	if err := fs.SaveSummary(ctx, "stale", session.SummaryInfo{
+		Content: "STALE", Cursor: 10, Tokens: 1,
+	}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if err := a.Resume(ctx, "stale"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := a.Run(ctx, "next"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(fp.AllReqs) != 1 {
+		t.Fatalf("AllReqs len = %d, want 1", len(fp.AllReqs))
+	}
+	msgs := fp.AllReqs[0].Messages
+	for _, m := range msgs {
+		if m.Content == "STALE" {
+			t.Errorf("stale summary leaked into LLM view: %+v", msgs)
+		}
+	}
+}
+
+// TestResume_NoSummary_StillWorks verifies Resume is fine
+// when no summary sidecar exists.
+func TestResume_NoSummary_StillWorks(t *testing.T) {
+	fp := providerfake.New("res-nosum")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	if err := fs.Append(ctx, "plain", []provider.Message{
+		{Role: provider.RoleUser, Content: "hi"},
+		{Role: provider.RoleAssistant, Content: "reply"},
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if err := a.Resume(ctx, "plain"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := a.Run(ctx, "next"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	msgs := fp.AllReqs[0].Messages
+	if len(msgs) != 3 {
+		t.Errorf("msgs len = %d, want 3 (no summary, 2 loaded + 1 user)", len(msgs))
+	}
+}
+
+// TestSaveOnSuccess_PersistsSummary verifies that when the
+// agent's summaryMsg is set during a step, saveOnSuccess
+// writes it to the sidecar.
+func TestSaveOnSuccess_PersistsSummary(t *testing.T) {
+	fp := providerfake.New("save-sum")
+	// 1st call: ErrContextLength (estimation wrong → reactive path).
+	// 2nd call: summarizeHistory → "REDUCED SUMMARY".
+	// 3rd call: retried step → "ok".
+	fp.Script = []providerfake.Call{
+		{Err: provider.ErrContextLength},
+		{Resp: &provider.Response{Content: "REDUCED SUMMARY"}},
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
+		MaxSteps: 5,
+	}, fs)
+	if _, err := a.Run(ctx, "hi"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	id := a.SessionID()
+	if id == "" {
+		t.Fatal("sessionID empty after Run")
+	}
+	got, err := fs.LoadSummary(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadSummary: %v", err)
+	}
+	if got.Content != "REDUCED SUMMARY" {
+		t.Errorf("got.Content = %q, want REDUCED SUMMARY", got.Content)
+	}
+	// Cursor is 0 for reactive summarization (summary IS the
+	// whole history now); non-zero for proactive (summary covers
+	// a prefix). We just verify the file was written.
+}
+
+// TestReset_ClearsSummaryCursor verifies Reset zeros the
+// summaryCursor (and the sidecar is deleted by Delete).
+func TestReset_ClearsSummaryCursor(t *testing.T) {
+	fp := providerfake.New("reset")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	hist := []provider.Message{
+		{Role: provider.RoleUser, Content: "old"},
+		{Role: provider.RoleAssistant, Content: "old-reply"},
+	}
+	if err := fs.Append(ctx, "s", hist); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.SaveSummary(ctx, "s", session.SummaryInfo{Content: "SUM", Cursor: 1, Tokens: 1}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
+	if err := a.Resume(ctx, "s"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	a.Reset()
+	// After Reset, the sidecar should be gone (Delete called).
+	if _, err := fs.LoadSummary(ctx, "s"); !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("after Reset, LoadSummary err = %v, want os.ErrNotExist", err)
+	}
+}

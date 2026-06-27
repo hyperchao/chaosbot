@@ -3,6 +3,7 @@ package session_test
 import (
 	"bytes"
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -299,5 +300,110 @@ func TestFileStore_RoundTripToolCall(t *testing.T) {
 	}
 	if got[1].ToolCallID != "c1" || got[1].Content != "file contents here" {
 		t.Errorf("tool msg = %+v, want tool_call_id=c1", got[1])
+	}
+}
+
+// TestSaveSummary_LoadSummary_Roundtrip verifies a saved
+// summary can be loaded back with the same fields.
+func TestSaveSummary_LoadSummary_Roundtrip(t *testing.T) {
+	fs, _ := newStore(t)
+	id := "sess-1"
+	want := session.SummaryInfo{Content: "summary text", Cursor: 5, Tokens: 3}
+	if err := fs.SaveSummary(context.Background(), id, want); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	got, err := fs.LoadSummary(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LoadSummary: %v", err)
+	}
+	if got != want {
+		t.Errorf("got %+v, want %+v", got, want)
+	}
+}
+
+// TestLoadSummary_NotExist verifies LoadSummary returns
+// os.ErrNotExist when no summary has been saved.
+func TestLoadSummary_NotExist(t *testing.T) {
+	fs, _ := newStore(t)
+	_, err := fs.LoadSummary(context.Background(), "nope")
+	if !errors.Is(err, os.ErrNotExist) {
+		t.Errorf("err = %v, want os.ErrNotExist", err)
+	}
+}
+
+// TestSaveSummary_Overwrites verifies a second save replaces
+// the first; we don't accumulate orphan summary files.
+func TestSaveSummary_Overwrites(t *testing.T) {
+	fs, dir := newStore(t)
+	id := "sess-overwrite"
+	if err := fs.SaveSummary(context.Background(), id, session.SummaryInfo{Content: "first", Cursor: 1, Tokens: 1}); err != nil {
+		t.Fatalf("SaveSummary first: %v", err)
+	}
+	if err := fs.SaveSummary(context.Background(), id, session.SummaryInfo{Content: "second", Cursor: 2, Tokens: 2}); err != nil {
+		t.Fatalf("SaveSummary second: %v", err)
+	}
+	got, err := fs.LoadSummary(context.Background(), id)
+	if err != nil {
+		t.Fatalf("LoadSummary: %v", err)
+	}
+	if got.Content != "second" || got.Cursor != 2 {
+		t.Errorf("got %+v, want {second, 2}", got)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, id+".summary*"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(matches) != 1 {
+		t.Errorf("summary file count = %d, want 1 (no orphans)", len(matches))
+	}
+}
+
+// TestDelete_RemovesSummary verifies Delete clears both the
+// history file and the summary sidecar.
+func TestDelete_RemovesSummary(t *testing.T) {
+	fs, dir := newStore(t)
+	id := "sess-del"
+	if err := fs.Append(context.Background(), id, []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.SaveSummary(context.Background(), id, session.SummaryInfo{Content: "s", Cursor: 1, Tokens: 1}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	if err := fs.Delete(context.Background(), id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dir, id+".jsonl")); !os.IsNotExist(err) {
+		t.Errorf("jsonl still present after Delete")
+	}
+	if _, err := os.Stat(filepath.Join(dir, id+".summary.json")); !os.IsNotExist(err) {
+		t.Errorf("summary still present after Delete")
+	}
+}
+
+// TestList_WorksWithoutSummary verifies sessions with no
+// sidecar are still listed; List does not require summary files.
+func TestList_WorksWithoutSummary(t *testing.T) {
+	fs, _ := newStore(t)
+	if err := fs.Append(context.Background(), "no-sum", []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.Append(context.Background(), "with-sum", []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.SaveSummary(context.Background(), "with-sum", session.SummaryInfo{Content: "s", Cursor: 1, Tokens: 1}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	ids, err := fs.List(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	want := map[string]bool{"no-sum": true, "with-sum": true}
+	if len(ids) != 2 {
+		t.Errorf("len(ids) = %d, want 2 (ids = %v)", len(ids), ids)
+	}
+	for _, id := range ids {
+		if !want[id] {
+			t.Errorf("unexpected id %q", id)
+		}
 	}
 }

@@ -41,6 +41,11 @@ func (fs *FileStore) path(id string) string {
 	return filepath.Join(fs.dir, id+".jsonl")
 }
 
+// summaryPath returns the sidecar path for a session's summary.
+func (fs *FileStore) summaryPath(id string) string {
+	return filepath.Join(fs.dir, id+".summary.json")
+}
+
 // Append appends messages to the session file. Atomic at the OS
 // level via O_APPEND. Uses bufio.Writer to batch small writes
 // into one syscall.
@@ -73,6 +78,58 @@ func (fs *FileStore) Append(ctx context.Context, id string, messages []provider.
 		return fmt.Errorf("session: flush: %w", err)
 	}
 	return f.Sync()
+}
+
+// SummaryInfo persists the last computed summary alongside
+// the history it covers. Cursor is the count of leading
+// history messages the summary covers (history[Cursor:] is
+// verbatim).
+type SummaryInfo struct {
+	Content string `json:"content"`
+	Cursor  int    `json:"cursor"`
+	Tokens  int    `json:"tokens"`
+}
+
+// SaveSummary atomically overwrites the summary sidecar for
+// the session. Atomic via tmp file + rename. Returns an
+// error on disk failure.
+func (fs *FileStore) SaveSummary(ctx context.Context, id string, info SummaryInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	data, err := json.Marshal(info)
+	if err != nil {
+		return fmt.Errorf("session: marshal summary: %w", err)
+	}
+	final := fs.summaryPath(id)
+	tmp := final + ".tmp"
+	if err := os.WriteFile(tmp, data, 0600); err != nil {
+		return fmt.Errorf("session: write summary tmp: %w", err)
+	}
+	if err := os.Rename(tmp, final); err != nil {
+		_ = os.Remove(tmp)
+		return fmt.Errorf("session: rename summary: %w", err)
+	}
+	return nil
+}
+
+// LoadSummary reads the summary sidecar. Returns
+// (SummaryInfo, nil) on success, (_, os.ErrNotExist) when no
+// summary has ever been saved, (_, wrapped-error) on
+// read/decode failure.
+func (fs *FileStore) LoadSummary(ctx context.Context, id string) (SummaryInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return SummaryInfo{}, err
+	}
+	data, err := os.ReadFile(fs.summaryPath(id))
+	if err != nil {
+		return SummaryInfo{}, err
+	}
+	var info SummaryInfo
+	if uerr := json.Unmarshal(data, &info); uerr != nil {
+		return SummaryInfo{}, fmt.Errorf("session: corrupt summary: %w", uerr)
+	}
+	return info, nil
 }
 
 // Load returns the full history for the given ID. Streaming
@@ -143,14 +200,17 @@ func (fs *FileStore) List(ctx context.Context) ([]string, error) {
 	return ids, nil
 }
 
-// Delete removes the session file. Idempotent.
+// Delete removes the session file and its summary sidecar.
+// Idempotent: missing files are not an error.
 func (fs *FileStore) Delete(ctx context.Context, id string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	err := os.Remove(fs.path(id))
-	if err != nil && !os.IsNotExist(err) {
+	if err := os.Remove(fs.path(id)); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("session: delete: %w", err)
+	}
+	if err := os.Remove(fs.summaryPath(id)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("session: delete summary: %w", err)
 	}
 	return nil
 }

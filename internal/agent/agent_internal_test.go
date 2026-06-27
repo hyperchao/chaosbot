@@ -48,7 +48,7 @@ func TestStep_FinalAnswerNoTools(t *testing.T) {
 	fp.NextResp = &provider.Response{Content: "the answer"}
 
 	history := []provider.Message{NewUserMessage("hi")}
-	newHistory, final, err := a.step(context.Background(), history)
+	newHistory, final, err := a.step(context.Background(), history, false)
 	if err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestStep_ToolCallsAppendToolMessages(t *testing.T) {
 	}
 
 	history := []provider.Message{NewUserMessage("hi")}
-	newHistory, final, err := a.step(context.Background(), history)
+	newHistory, final, err := a.step(context.Background(), history, false)
 	if err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -128,7 +128,7 @@ func TestStep_ToolErrorEmbeddedInMessage(t *testing.T) {
 		Cfg:      Config{Model: "m"},
 	}
 	history := []provider.Message{NewUserMessage("go")}
-	newHistory, final, err := a.step(context.Background(), history)
+	newHistory, final, err := a.step(context.Background(), history, false)
 	if err != nil {
 		t.Fatalf("step: %v, tool errors should NOT bubble up as Go errors", err)
 	}
@@ -154,7 +154,7 @@ func TestStep_ProviderErrorBubblesUp(t *testing.T) {
 		Registry: NewRegistry(),
 		Cfg:      Config{Model: "m"},
 	}
-	_, _, err := a.step(context.Background(), []provider.Message{NewUserMessage("x")})
+	_, _, err := a.step(context.Background(), []provider.Message{NewUserMessage("x")}, false)
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want wraps %v", err, wantErr)
 	}
@@ -172,7 +172,7 @@ func TestStep_ValidateFailsBubblesUp(t *testing.T) {
 	history := []provider.Message{
 		{Role: provider.RoleSystem, Content: "another system msg"},
 	}
-	_, _, err := a.step(context.Background(), history)
+	_, _, err := a.step(context.Background(), history, false)
 	if !errors.Is(err, provider.ErrSystemConflict) {
 		t.Errorf("err = %v, want wraps ErrSystemConflict", err)
 	}
@@ -182,7 +182,7 @@ func TestStep_PassesSystemAndToolsToProvider(t *testing.T) {
 	a, fp := newTestAgent(t, map[string]string{"echo": "ok"})
 	fp.NextResp = &provider.Response{Content: "done"}
 
-	_, _, err := a.step(context.Background(), []provider.Message{NewUserMessage("hi")})
+	_, _, err := a.step(context.Background(), []provider.Message{NewUserMessage("hi")}, false)
 	if err != nil {
 		t.Fatalf("step: %v", err)
 	}
@@ -316,7 +316,7 @@ func TestApplyWindow_NoOpWhenUnderBudget(t *testing.T) {
 		NewUserMessage("hi"),
 		NewAssistantMessage("ok", nil),
 	}
-	out, _, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist, false)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -332,6 +332,7 @@ func TestApplyWindow_DropsOldestTurn(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.Cfg.MaxContextTokens = 50
 	a.Cfg.SafetyMarginFraction = 0.0
+	a.Cfg.SummaryDisabled = true // exercise pure dropping, not summary
 	big := strings.Repeat("a", 100)
 	hist := []provider.Message{
 		NewUserMessage(big),
@@ -341,7 +342,7 @@ func TestApplyWindow_DropsOldestTurn(t *testing.T) {
 		NewUserMessage(big),
 		NewAssistantMessage("a3", nil),
 	}
-	out, _, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist, false)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -361,7 +362,7 @@ func TestApplyWindow_NoOpWhenMaxContextTokensIsZero(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.Cfg.MaxContextTokens = 0 // unset
 	hist := []provider.Message{NewUserMessage("hi"), NewAssistantMessage("ok", nil)}
-	out, _, err := a.applyWindow(context.Background(), hist)
+	out, _, err := a.applyWindow(context.Background(), hist, false)
 	if err != nil {
 		t.Fatalf("applyWindow: %v", err)
 	}
@@ -513,13 +514,13 @@ func TestReset_ClearsSummaryFields(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.History = []provider.Message{NewUserMessage("old")}
 	a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: "summary"}
-	a.trimOffset = 3
+	a.committedPrefix = 3
 	a.Reset()
 	if a.summaryMsg != nil {
 		t.Errorf("summaryMsg = %v, want nil", a.summaryMsg)
 	}
-	if a.trimOffset != 0 {
-		t.Errorf("trimOffset = %d, want 0", a.trimOffset)
+	if a.committedPrefix != 0 {
+		t.Errorf("committedPrefix = %d, want 0", a.committedPrefix)
 	}
 }
 

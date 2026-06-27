@@ -23,6 +23,15 @@ type Store interface {
 	// Returns os.ErrNotExist if the session doesn't exist.
 	Load(ctx context.Context, id string) ([]provider.Message, error)
 
+	// SaveSummary persists the last computed summary. Atomic
+	// overwrite of a sidecar; absence is a valid state meaning
+	// "no summary yet".
+	SaveSummary(ctx context.Context, id string, info SummaryInfo) error
+
+	// LoadSummary reads the persisted summary. Returns
+	// os.ErrNotExist when no summary has ever been saved.
+	LoadSummary(ctx context.Context, id string) (SummaryInfo, error)
+
 	// List returns all session IDs, newest first.
 	List(ctx context.Context) ([]string, error)
 
@@ -44,6 +53,14 @@ func (NoopStore) Append(_ context.Context, _ string, _ []provider.Message) error
 
 func (NoopStore) Load(_ context.Context, _ string) ([]provider.Message, error) {
 	return nil, os.ErrNotExist
+}
+
+func (NoopStore) SaveSummary(_ context.Context, _ string, _ SummaryInfo) error {
+	return nil
+}
+
+func (NoopStore) LoadSummary(_ context.Context, _ string) (SummaryInfo, error) {
+	return SummaryInfo{}, os.ErrNotExist
 }
 
 func (NoopStore) List(_ context.Context) ([]string, error) {
