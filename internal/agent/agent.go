@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"slices"
 	"strings"
 	"unsafe"
 
@@ -497,7 +498,7 @@ func (a *reActAgent) summaryEnabled() bool {
 // Resume clear it.
 func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message, forceCompress bool) ([]provider.Message, int, error) {
 	budget := a.contextBudget()
-	start := min(a.committedPrefix, len(history))
+	start := a.committedPrefix
 	candidate := history[start:]
 	view := candidate
 	if a.summaryMsg != nil && a.committedPrefix > 0 {
@@ -512,35 +513,36 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 	// so the LLM receives coherent user+assistant+tool sequences.
 	if !a.Cfg.SummaryDisabled {
 		ends := turnEnds(candidate)
-		target := len(candidate) / 2
+		// Aggressive split: summarize 2/3 of candidate so summary+recent
+		// is more likely to fit budget on the first try, avoiding the
+		// "summary still too big" path that discards the LLM call.
+		target := len(candidate) * 2 / 3
+		// BinarySearch finds target exactly. If missing, i is the
+		// insertion point and ends[i-1] is the largest end <= target.
+		// If no end qualifies, fall back to the last end.
+		i, found := slices.BinarySearch(ends, target)
 		split := 0
-		for _, end := range ends {
-			if end <= target {
-				split = end
-			} else {
-				break
-			}
-		}
-		if split == 0 && len(ends) > 0 {
+		if found {
+			split = ends[i]
+		} else if i > 0 {
+			split = ends[i-1]
+		} else if len(ends) > 0 {
 			split = ends[len(ends)-1]
 		}
 		early := candidate[:split]
 		recent := candidate[split:]
 		summary, err := a.summarizeHistory(ctx, early)
-		if err == nil {
+		if err != nil {
+			return nil, 0, fmt.Errorf("agent: summarize: %w", err)
+		}
+		candidateWithSummary := append([]provider.Message{summary}, recent...)
+		if a.estimateHistoryTokens(candidateWithSummary) <= budget {
 			a.summaryMsg = &summary
 			a.committedPrefix = start + split
-			candidateWithSummary := append([]provider.Message{summary}, recent...)
-			if a.estimateHistoryTokens(candidateWithSummary) <= budget {
-				return candidateWithSummary, start + split, nil
-			}
-			// Summary still too big — return recent only without it.
-			// Don't commit committedPrefix: the summary is being
-			// discarded, so nothing was actually summarized.
-			a.summaryMsg = nil
+			return candidateWithSummary, start + split, nil
 		}
-		// Summarization failed (provider error, ctx cancel).
-		// Fall back to plain dropping.
+		// Summary still too big — discard. Leave a.summaryMsg and
+		// a.committedPrefix untouched: nothing was actually committed.
 	}
 	result := dropOldestTurns(candidate, budget, a.estimateHistoryTokens)
 	return result, len(history) - len(result), nil
@@ -551,34 +553,19 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 // user message + everything up to the next user
 // message.
 func dropOldestTurns(history []provider.Message, budget int, estimate func([]provider.Message) int) []provider.Message {
-	for len(history) > 0 {
-		end := turnEnd(history)
-		if end < 0 {
-			return history
-		}
-		candidate := history[end:]
-		if estimate(candidate) <= budget {
+	ends := turnEnds(history)
+	if len(ends) == 0 {
+		return history
+	}
+	// Walk from the oldest turn to the newest (longest candidate to
+	// shortest); the first fit is the longest prefix that fits.
+	for _, end := range ends {
+		if candidate := history[end:]; estimate(candidate) <= budget {
 			return candidate
 		}
-		history = candidate
 	}
-	return history
-}
-
-// turnEnd returns the index that ends the first turn
-// (the index of the second user message), or -1 if
-// history contains at most one turn.
-func turnEnd(history []provider.Message) int {
-	seen := 0
-	for i, m := range history {
-		if m.Role == provider.RoleUser {
-			if seen == 1 {
-				return i
-			}
-			seen++
-		}
-	}
-	return -1
+	// Nothing fits; return the shortest tail (last turn only).
+	return history[ends[len(ends)-1]:]
 }
 
 // turnEnds returns the indices of all user messages that

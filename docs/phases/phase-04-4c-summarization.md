@@ -65,10 +65,15 @@ applyWindow(history):
   if estimate(history) <= budget:
     return history  // no-op
 
-  // Try summarizing the early half
-  mid = len(history) / 2
-  early = history[:mid]
-  recent = history[mid:]
+  // Try summarizing the early 2/3.
+  // target = len(history) * 2 / 3: aggressive enough that
+  // summary + recent is likely to fit budget in one shot,
+  // avoiding the "summary still too big" fallback that
+  // discards the LLM summarize call.
+  target = len(history) * 2 / 3
+  split = last turn-end at or before target  // via sort.SearchInts
+  early = history[:split]
+  recent = history[split:]
   summary, err = summarizeHistory(early)
   if err != nil:
     // Summarization failed (provider error, ctx cancel).

@@ -479,7 +479,7 @@ DI 路径 `buildAgent` helper 在 4 个 Run 测里正常工作);
   `dropOldestTurns`
 - `dropOldestTurns(history, budget, estimate)` — 每次剥掉最旧一整个 turn
   (user msg 到下一个 user msg 之间),直到 estimate ≤ budget
-- `turnEnd(history) int` — 返回第二个 user msg 的 index,或 -1
+- `turnEnds(history) []int` — 返回所有"后面还有 user msg"的 user msg 索引
 
 **Config 新增**:
 - `MaxContextTokens int` — 0 → default 128K,> 0 → verbatim
