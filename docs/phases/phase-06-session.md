@@ -9,7 +9,7 @@
 |---|---|
 | Phase | `06` |
 | Sub-units | `06-1` … `06-3` |
-| Status | `⬜ not started` |
+| Status | `✅ complete` (all 3 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04 (Agent loop), Phase 07 (CLI/REPL) |
 | Estimated total LOC | ~150 Go + ~80 test |
@@ -271,3 +271,53 @@ These live in `cli/cli_test.go` and test the REPL + session interaction:
 
 **自验**: `make test` 11/11 session tests PASS;`make test ./...` 90+ total PASS;
 `make lint` clean。
+
+### 实现笔记 06-3 — Agent 接入 session
+
+**Files**: `internal/agent/agent.go` (+139 行), `internal/agent/agent_test.go` (+236 行),
+`cmd/chaosbot/cli/cli.go` (+43 行), `cmd/chaosbot/wire.go` (+22 行),
+`cmd/chaosbot/cli/cli_test.go` (+62 行)
+
+**新增接口**:
+- `Agent` interface 新增 `Resume(ctx, id string) error` 和 `SessionID() string` 方法
+- `reActAgent` 新增 `Store session.Store` DI 注入字段
+- `reActAgent` 新增 `sessionID string` 和 `sessionOffset int` internal 状态字段
+
+**Run 集成**:
+- 首次 `Run` 成功时,若 `Store != nil` 且 `sessionID == ""`,生成 `session.NewID()` 并保存
+- 每轮 `saveOnSuccess` 调用 `Store.Append(ctx, sessionID, history[sessionOffset:])` 增量持久化
+- `sessionOffset = len(history)` 跟新历史对齐,下次 Append 只写增量
+- `Reset`:若 `Store != nil && sessionID != ""` 则 `Store.Delete` 删除 session 文件并重置 offset
+
+**Resume 集成**:
+- `Resume(ctx, id)` 调用 `Store.Load` 恢复完整 history 到 `a.History`
+- 调用 `Store.LoadSummary` 恢复 summarization state (`summaryMsg`, `summaryCursor`)
+- `sessionOffset = len(history)` 与 store 对齐
+
+**Bug fix (关键)**:
+- 原始 bug:窗口化直接修改原 `history` slice,破坏 `sessionOffset` 与 store 的对应关系
+- 修复:窗口化只应用于传给 LLM 的视图,不修改原始累计 `history`
+- `history = append(a.History, ...)` 不修改 `a.History` 直到 `saveOnSuccess` 成功后
+
+**CLI 变更** (`cb47db7`):
+- `runCmd` 新增 `--session <id>` flag,调用 `agent.Resume` 恢复 session
+- REPL 内部自动处理 auto-save,无需 CLI 知道 Store
+- `wire.go`:注册 `FileStore` via DI,缺失或初始化失败时降级 `NoopStore`
+- `fakeAgent` 更新匹配新接口(`Resume` + `SessionID`)
+
+**测试覆盖**(8 测,全 PASS):
+- auto-save on Run success
+- no-store fallback (nil Store = no-op)
+- Reset deletes session
+- Resume loads and continues
+- Resume errors on missing session
+- Resume errors on corrupt session
+- windowing does not break session offset
+- sessionOffset stays aligned after multi-turn run
+
+**Layering**:
+- `internal/agent/agent.go` 新增 import `chaosbot/internal/session`
+- `cmd/chaosbot/wire.go` 注册 `session.FileStore` DI
+- `internal/session` 是 leaf 包,不反向依赖 `agent`
+
+**自验**: `make test` 90+ PASS;`make lint` clean;`gofmt -l .` clean。

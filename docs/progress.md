@@ -43,7 +43,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 05-6  | 默认工具注册 | ✅ | 06-15 | 06-15 | n/a | n/a | 不额外写代码:每个 tool commit 都 incremental 加进 `wire.go` 闭包;`make test` + REPL smoke 验证 5 个 tool 都能被 LLM 看到 |
 | 06-1  | session.Store 持久化 | ✅ | 06-16 | 06-16 | 200 | 0/0 | Store 接口 + FileStore(JSONL,O_APPEND,bufio.Writer+fsync);200 LOC 拆成 impl 1 commit |
 | 06-2  | session 单测 | ✅ | 06-16 | 06-16 | 220 | 11/11 | 11 个测:roundtrip / 增量 / LoadNotExist / empty no-op / List / Delete / corrupt / large output / NewID |
-| 06-3  | Agent 接入 session | ⬜ | | | | | |
+| 06-3  | Agent 接入 session | ✅ | 06-17 | 06-17 | ~500 | 8/8 | `Store` DI 注入;`sessionID`/`sessionOffset` internal 状态;`Resume`/`SessionID` 加 `Agent` 接口;`saveOnSuccess` 自动 Append 增量;`Reset` 删 session;`Agent` own session 内部状态;`sessionOffset` 与 windowing 解耦;见 phase-06 实现笔记 06-3 |
 | 07-1  | config 加载(YAML + env) | ✅ | 06-03 | 06-03 | 140 | 8/8 | yaml.v3 入 go.mod;`CHAOSBOT_*` env 覆盖 YAML;api_key_env 间接解析;无 XDG/cwd 发现 |
 | 07-2  | cobra 子命令 stub | ✅ | 06-03 | 06-03 | ~120 | 7/7 | **DI 版**:`main.go` 走 `di.New()` 装配;`cli` 拿 `agent.Agent` 接口 + 手写 `fakeAgent` mock;`needsConfig` 让 `version` 跳过 API key 校验;`openai.New` 用闭包转成无参 |
 | 07-3  | ui/cli 单次输出渲染 | ✅ skipped | | | | | fmt.Fprintln 当前够用,无独立 renderer |
