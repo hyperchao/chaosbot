@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/hyperchao/di"
@@ -659,4 +660,81 @@ func TestReset_ClearsSummaryCursor(t *testing.T) {
 	if _, err := fs.LoadSummary(ctx, "s"); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("after Reset, LoadSummary err = %v, want os.ErrNotExist", err)
 	}
+}
+
+// TestSaveOnSuccess_PersistsCursorWithoutSummary verifies that when
+// summarization is disabled (or has never triggered) but the window
+// has slid forward, saveOnSuccess writes a cursor-only SummaryInfo
+// so Resume can restore committedPrefix without re-processing the
+// already-committed prefix.
+func TestSaveOnSuccess_PersistsCursorWithoutSummary(t *testing.T) {
+	fp := providerfake.New("cursor-only")
+	// Every call returns "ok" immediately (no summarization needed).
+	// Need 11 entries: 1 + 5 Run calls + 1 Resume verification Run.
+	fp.Script = make([]providerfake.Call, 11)
+	for i := range fp.Script {
+		fp.Script[i] = providerfake.Call{Resp: &provider.Response{Content: "ok"}}
+	}
+	fs, _ := session.NewFileStore(t.TempDir())
+	ctx := context.Background()
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
+		MaxSteps:         10,
+		SummaryDisabled:  true, // summarization off — window slides via dropOldestTurns
+		MaxContextTokens: 100,  // artificially small so windowing activates quickly
+	}, fs)
+
+	// Run one turn — committedPrefix stays 0 (no trimming yet).
+	if _, err := a.Run(ctx, strings.Repeat("a", 500)); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	id := a.SessionID()
+
+	// Run more turns until the window slides past the first turn.
+	// With MaxContextTokens=100 the history will exceed budget quickly.
+	committedAfterOne := fsLoadSummaryCursor(t, fs, id)
+	if committedAfterOne != 0 {
+		t.Fatalf("after 1 turn: committedPrefix = %d, want 0", committedAfterOne)
+	}
+
+	// Run until committedPrefix > 0 (window has dropped at least one turn).
+	for i := 0; i < 5; i++ {
+		if _, err := a.Run(ctx, strings.Repeat("b", 500)); err != nil {
+			t.Fatalf("Run %d: %v", i+2, err)
+		}
+	}
+	cursorAfter := fsLoadSummaryCursor(t, fs, id)
+	if cursorAfter == 0 {
+		t.Fatal("after multiple turns: committedPrefix still 0 — cursor should have advanced")
+	}
+
+	// Resume into a fresh agent. Verify committedPrefix is restored.
+	fp2 := providerfake.New("resume")
+	fp2.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	}
+	a2 := buildAgentWithStore(t, fp2, agent.NewRegistry(), agent.Config{
+		MaxSteps:         10,
+		SummaryDisabled:  true,
+		MaxContextTokens: 100,
+	}, fs)
+	if err := a2.Resume(ctx, id); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	// committedPrefix must match what we persisted.
+	cursorAfterResume := fsLoadSummaryCursor(t, fs, id)
+	if cursorAfterResume != cursorAfter {
+		t.Errorf("after Resume: committedPrefix = %d, want %d", cursorAfterResume, cursorAfter)
+	}
+}
+
+func fsLoadSummaryCursor(t *testing.T, fs session.Store, id string) int {
+	t.Helper()
+	info, err := fs.LoadSummary(context.Background(), id)
+	if errors.Is(err, os.ErrNotExist) {
+		return 0
+	}
+	if err != nil {
+		t.Fatalf("LoadSummary: %v", err)
+	}
+	return info.Cursor
 }

@@ -115,10 +115,12 @@ func (a *reActAgent) Resume(ctx context.Context, id string) error {
 	switch {
 	case err == nil:
 		if info.Cursor > 0 && info.Cursor <= len(history) {
-			a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: info.Content}
 			a.committedPrefix = info.Cursor
+			if info.Content != "" {
+				a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: info.Content}
+			}
 		}
-		// Stale cursor (info.Cursor > len(history)): discard summary.
+		// Stale cursor (info.Cursor > len(history)): discard.
 	case errors.Is(err, os.ErrNotExist):
 		// No summary yet — fine.
 	default:
@@ -284,6 +286,17 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 			Tokens:  tokens,
 		}); err != nil {
 			slog.Warn("saveOnSuccess: SaveSummary failed", "err", err, "sessionID", a.sessionID)
+		}
+	} else if a.committedPrefix > 0 {
+		// No summary yet (e.g. summarization disabled during this
+		// session) but the window has slid forward. Persist the
+		// cursor so Resume knows how many leading messages are
+		// already committed to storage and need not be re-sent
+		// to the LLM or re-summarized.
+		if err := a.Store.SaveSummary(ctx, a.sessionID, session.SummaryInfo{
+			Cursor: a.committedPrefix,
+		}); err != nil {
+			slog.Warn("saveOnSuccess: SaveSummary(cursor only) failed", "err", err, "sessionID", a.sessionID)
 		}
 	}
 	a.sessionOffset = len(history)
