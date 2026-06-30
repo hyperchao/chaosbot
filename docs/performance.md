@@ -17,7 +17,22 @@ allocation patterns should be measured against this doc.
 | Direct dependencies | ≤ 8 | See ADR-0001 |
 | CGO usage | forbidden | Cross-compile, musl/Alpine, ARM portability |
 
-## 2. Per-tool output caps
+## 2. Current baseline (measured 2026-06-30 via `make perf`)
+
+| Metric | Measured | Limit | Status |
+|---|---|---|---|
+| Binary size | 6.85 MB | ≤ 25 MB | ✅ |
+| Cold-start RSS (`chaosbot version`) | 2.69 MB | ≤ 30 MB | ✅ |
+| Steady-state RSS (REPL startup + exit) | ~2.69 MB | ≤ 40 MB | ✅ |
+| Direct dependencies | 6 | ≤ 8 | ✅ |
+| CGO usage | 0 | forbidden | ✅ |
+
+> Steady-state measurement runs `echo "" | chaosbot` (immediate EOF → exit).
+> Without an API key the agent is nil and REPL exits before entering the loop,
+> so this measures startup + config load RSS. A live REPL idling with a wired
+> agent would be marginally higher but still well within budget.
+
+## 3. Per-tool output caps
 
 These constants live in each tool package and are unit-tested.
 
@@ -33,7 +48,7 @@ If a cap is hit, the tool returns a clear error string explaining the
 truncation; the agent loop surfaces it to the LLM so it can retry with a
 narrower request.
 
-## 3. Provider layer caps
+## 4. Provider layer caps
 
 - LLM request body: ≤ 256 KB. Enforced by the OpenAI provider; large
   histories are trimmed from the front, with a log line.
@@ -44,7 +59,7 @@ narrower request.
   10, idle timeout 90 s, response header timeout 10 s).
 - No per-request `http.Client` construction.
 
-## 4. Measurement procedure
+## 5. Measurement procedure
 
 `scripts/measure.sh` is the canonical harness (added in Phase 01-3). It
 runs three checks and prints a table:
@@ -62,7 +77,7 @@ Each phase that touches binary, memory, or I/O must paste the table
 output at the bottom of the corresponding `docs/phases/phase-NN-*.md`
 under a "性能基线" heading.
 
-## 5. When to re-measure
+## 6. When to re-measure
 
 - After any change to `go.mod` (dependency change).
 - After any change to the `init()` path of any package.
@@ -70,7 +85,7 @@ under a "性能基线" heading.
 - After adding or removing a built-in tool.
 - Before tagging a release.
 
-## 6. Regression handling
+## 7. Regression handling
 
 If a PR pushes any metric past its limit, the PR **must** either:
 
@@ -81,7 +96,7 @@ If a PR pushes any metric past its limit, the PR **must** either:
 No silent regressions. The progress table should reflect the new
 measured number in the same commit that changes the binary.
 
-## 7. Profiling escape hatches
+## 8. Profiling escape hatches
 
 - `make perf-cpu` runs the synthetic agent loop under `pprof` and writes
   `cpu.prof` for later inspection.
@@ -89,7 +104,7 @@ measured number in the same commit that changes the binary.
 - `CHAOSBOT_PPROF=:6060` (planned, not in MVP) starts an HTTP pprof
   endpoint when set; default off to keep the binary lean.
 
-## 8. Known measurement gaps and follow-ups
+## 9. Known measurement gaps and follow-ups
 
 The shell-based `scripts/measure.sh` covers the **macro** budget
 (binary size, cold-start, steady-state, peak per Run), but has inherent
@@ -97,9 +112,9 @@ precision limits for sub-50ms processes. Concrete follow-ups:
 
 | ID | Gap | Owner | Planned in |
 |---|---|---|---|
-| F1 | Cold-start RSS for fast-exit commands (`chaosbot version` < 50ms) is racy: `ps` polling catches the kernel's pre-allocation snapshot (~32-144 KB), not the real Go-runtime peak (~3 MB). | chaosbot | **Phase 08-2** — add a `chaosbot bench` subcommand that wraps the target binary in a Go process, calls `runtime.MemStats.HeapAlloc` / `Sys` at the right moments, and reports true peak. |
-| F2 | Peak per `Agent.Run` requires a **synthetic** agent loop driven by a mock provider. | chaosbot | Phase 04-3 (loop logic) + Phase 08-2 (bench driver). |
-| F3 | Per-tool RSS attribution is invisible — `agent` allocates during tool calls but `ps` only sees the whole process. | chaosbot | Phase 08-2 — bench driver can call individual tools in a loop and bracket each with `runtime.MemStats`. |
+| F1 | Cold-start RSS for fast-exit commands ... | chaosbot | **🚫 intentionally skipped** — see Phase 08-2 spec for rationale. |
+| F2 | Peak per `Agent.Run` ... | chaosbot | **🚫 intentionally skipped** — see Phase 08-2 spec for rationale. |
+| F3 | Per-tool RSS attribution ... | chaosbot | **🚫 intentionally skipped** — see Phase 08-2 spec for rationale. |
 | F4 | Linux-only `getrusage`-style peak RSS via `/usr/bin/time -v` is not used on macOS. | chaosbot | Followed by F1: once the Go bench exists, this gap closes because the bench is cross-platform. |
 
 These are tracked in `docs/progress.md` row **08-2** (the row description

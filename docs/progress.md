@@ -49,7 +49,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 07-3  | ui/cli 单次输出渲染 | ✅ skipped | | | | | fmt.Fprintln 当前够用,无独立 renderer |
 | 07-4  | REPL(/reset /exit /help,bufio.Scanner) | ✅ | 06-11 | 06-11 | ~115 | 11/11 | **stdlib `flag` + bufio.Scanner**;agent.Agent 加 `Chat(ctx, msgs) (msg, err)`,`Run` 改包装;REPL 持 `[]provider.Message` history,每轮 `[history..., userMsg, reply]` 喂 Chat,2 turn 测验证 LLM 看到 q1+a1+q2;slash commands 在 cli.replCmd;os.Stdin DI alias `"in"`;6 个新 cli test + 1 个 agent 层 Chat test |
 | 08-1  | 测试补全(边界 + 错误路径) | ✅ | 06-30 | 06-30 | ~150 | 11/11 | 新增 agent_internal_test.go(RoleTag 100%)/agent_test.go(saveOnSuccess 失败路径)/session_test.go(SaveSummary/Append/Delete 失败路径)/openai_internal_test.go(toOpenAIMessage/EstimateTokens);见 phase-08-1 实现笔记 |
-| 08-2  | README/config 完善 + 性能基线回填 + Go bench 子命令(performance.md F1-F3) | ⬜ | | | | | |
+| 08-2  | README/config 完善 + 性能基线回填 (bench 有意跳过) | ✅ | 06-30 | 06-30 | ~50 | 0/0 | README 重写;measure.sh 修复;performance.md 基线回填;bench 子命令有意跳过(见 phase-08-2 spec) | |
 | 08-3  | REPL readline（历史 + 行编辑 + Tab 补全） | ✅ | 06-30 | 06-30 | ~110 | 5/5 | `github.com/chzyer/readline` 替代 bufio.Scanner;终端检测自动退回到 scanner;自定义 replCompleter;见 phase-08-3 实现笔记 |
 
 ## 200-LOC 守门(每轮 review 预算)

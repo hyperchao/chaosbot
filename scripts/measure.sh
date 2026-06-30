@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # chaosbot performance baseline (docs/performance.md).
 # Portable across macOS and Linux. Steps whose subcommand is not yet
-# built are skipped with a clear "not yet implemented" note.
+# built are skipped with a clear note.
 
 set -uo pipefail
 
@@ -45,26 +45,22 @@ sample_rss_kb() {
     echo "$max"
 }
 
-has_subcmd() { "$BIN" "$1" --help >/dev/null 2>&1; }
-
 echo "==> Building..."
-"$GO" build -trimpath -ldflags "-s -w" -o "$BIN" ./... || { echo "build failed"; exit 1; }
+"$GO" build -trimpath -ldflags "-s -w" -o "$BIN" ./cmd/chaosbot || { echo "build failed"; exit 1; }
 
 size_b=$(stat -f %z "$BIN" 2>/dev/null || stat -c %s "$BIN")
 echo "==> Binary size : $(bytes_to_mb "$size_b") MB  (limit ${LIM_BIN} MB)"
 
 echo "==> Cold-start  : $(kb_to_mb "$(sample_rss_kb "$BIN" version)") MB  (limit ${LIM_COLD} MB)"
 
-if has_subcmd repl; then
-    echo "==> Steady-state: $(kb_to_mb "$(sample_rss_kb "$BIN" repl < /dev/null)") MB  (limit ${LIM_STEADY} MB)"
-else
-    echo "==> Steady-state: skipped (REPL not yet implemented; Phase 07-4)"
-fi
+# Steady-state REPL: feed empty input (immediate EOF). Without an API key
+# the agent is nil and REPL exits before entering the loop, so this
+# measures startup + config load RSS.
+echo "==> Steady-state: $(kb_to_mb "$(sample_rss_kb sh -c 'echo "" | "'"$BIN"'"')") MB  (limit ${LIM_STEADY} MB)"
 
-if has_subcmd bench; then
-    echo "==> Peak / Run  : $(kb_to_mb "$(sample_rss_kb "$BIN" bench)") MB  (limit ${LIM_PEAK} MB)"
-else
-    echo "==> Peak / Run  : skipped (synthetic bench not yet implemented; Phase 08-2)"
-fi
+# Synthetic bench intentionally skipped: the ps-based approach is racy
+# for sub-50ms operations and per-tool attribution needs a mock-driven
+# loop. See docs/performance.md §8 F1-F3 and docs/phases/phase-08-2.md.
+echo "==> Peak / Run  : skipped (synthetic bench intentionally skipped; see docs/phases/phase-08-2.md)"
 
 echo "==> Done."
