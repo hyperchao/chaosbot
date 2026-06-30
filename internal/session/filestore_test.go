@@ -380,6 +380,41 @@ func TestDelete_RemovesSummary(t *testing.T) {
 	}
 }
 
+func TestSaveSummary_WriteFails_ReadOnlyDir(t *testing.T) {
+	fs, dir := newStore(t)
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer os.Chmod(dir, 0700)
+	err := fs.SaveSummary(context.Background(), "will-fail", session.SummaryInfo{Content: "s", Cursor: 1, Tokens: 1})
+	if err == nil {
+		t.Fatal("SaveSummary on read-only dir: got nil, want error")
+	}
+}
+
+func TestAppend_WriteFails_ReadOnlyDir(t *testing.T) {
+	fs, dir := newStore(t)
+	if err := fs.Append(context.Background(), "existing", []provider.Message{mustMessage(t, provider.RoleUser, "existing")}); err != nil {
+		t.Fatalf("Append setup: %v", err)
+	}
+	if err := os.Chmod(dir, 0500); err != nil {
+		t.Fatalf("Chmod: %v", err)
+	}
+	defer os.Chmod(dir, 0700)
+	err := fs.Append(context.Background(), "new", []provider.Message{mustMessage(t, provider.RoleUser, "new")})
+	if err == nil {
+		t.Fatal("Append on read-only dir: got nil, want error")
+	}
+}
+
+func TestDelete_FileNotExist(t *testing.T) {
+	fs, _ := newStore(t)
+	err := fs.Delete(context.Background(), "never-existed")
+	if err != nil {
+		t.Errorf("Delete non-existent: %v, want nil", err)
+	}
+}
+
 // TestList_WorksWithoutSummary verifies sessions with no
 // sidecar are still listed; List does not require summary files.
 func TestList_WorksWithoutSummary(t *testing.T) {

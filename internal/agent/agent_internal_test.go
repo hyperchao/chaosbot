@@ -578,3 +578,24 @@ func TestSerializeHistoryFragment_Empty(t *testing.T) {
 		t.Errorf("empty slice → want empty string")
 	}
 }
+
+func TestRoleTag(t *testing.T) {
+	tests := []struct {
+		role provider.Role
+		want string
+	}{
+		{provider.RoleUser, "[user]"},
+		{provider.RoleAssistant, "[assistant]"},
+		{provider.RoleTool, "[tool]"},
+		{provider.RoleSystem, "[system]"},
+		{provider.Role("invalid"), "[unknown]"},
+		{provider.Role(""), "[unknown]"},
+		{provider.Role("ROLE_TOOL_RESULT"), "[unknown]"},
+	}
+	for _, tt := range tests {
+		got := roleTag(tt.role)
+		if got != tt.want {
+			t.Errorf("roleTag(%q) = %q, want %q", tt.role, got, tt.want)
+		}
+	}
+}

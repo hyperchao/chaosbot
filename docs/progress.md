@@ -48,7 +48,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 07-2  | cobra 子命令 stub | ✅ | 06-03 | 06-03 | ~120 | 7/7 | **DI 版**:`main.go` 走 `di.New()` 装配;`cli` 拿 `agent.Agent` 接口 + 手写 `fakeAgent` mock;`needsConfig` 让 `version` 跳过 API key 校验;`openai.New` 用闭包转成无参 |
 | 07-3  | ui/cli 单次输出渲染 | ✅ skipped | | | | | fmt.Fprintln 当前够用,无独立 renderer |
 | 07-4  | REPL(/reset /exit /help,bufio.Scanner) | ✅ | 06-11 | 06-11 | ~115 | 11/11 | **stdlib `flag` + bufio.Scanner**;agent.Agent 加 `Chat(ctx, msgs) (msg, err)`,`Run` 改包装;REPL 持 `[]provider.Message` history,每轮 `[history..., userMsg, reply]` 喂 Chat,2 turn 测验证 LLM 看到 q1+a1+q2;slash commands 在 cli.replCmd;os.Stdin DI alias `"in"`;6 个新 cli test + 1 个 agent 层 Chat test |
-| 08-1  | 测试补全(边界 + 错误路径) | ⬜ | | | | | |
+| 08-1  | 测试补全(边界 + 错误路径) | ✅ | 06-30 | 06-30 | ~150 | 11/11 | 新增 agent_internal_test.go(RoleTag 100%)/agent_test.go(saveOnSuccess 失败路径)/session_test.go(SaveSummary/Append/Delete 失败路径)/openai_internal_test.go(toOpenAIMessage/EstimateTokens);见 phase-08-1 实现笔记 |
 | 08-2  | README/config 完善 + 性能基线回填 + Go bench 子命令(performance.md F1-F3) | ⬜ | | | | | |
 
 ## 200-LOC 守门(每轮 review 预算)

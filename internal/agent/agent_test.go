@@ -738,3 +738,45 @@ func fsLoadSummaryCursor(t *testing.T, fs session.Store, id string) int {
 	}
 	return info.Cursor
 }
+
+type failAppendStore struct{ session.NoopStore }
+
+func (failAppendStore) Append(context.Context, string, []provider.Message) error {
+	return errors.New("append failed")
+}
+
+func TestSaveOnSuccess_AppendFails_AgentStillSucceeds(t *testing.T) {
+	fp := providerfake.New("append-fail")
+	fp.Script = []providerfake.Call{
+		{Resp: &provider.Response{Content: "answer"}},
+	}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, failAppendStore{})
+	_, err := a.Run(context.Background(), "question")
+	if err != nil {
+		t.Fatalf("Run with failing Append: %v", err)
+	}
+}
+
+type failSaveSummaryStore struct{ session.NoopStore }
+
+func (failSaveSummaryStore) Append(_ context.Context, _ string, _ []provider.Message) error {
+	return nil
+}
+
+func (failSaveSummaryStore) SaveSummary(context.Context, string, session.SummaryInfo) error {
+	return errors.New("save summary failed")
+}
+
+func TestSaveOnSuccess_SaveSummaryFails_AgentStillSucceeds(t *testing.T) {
+	fp := providerfake.New("save-summary-fail")
+	fp.NextResp = &provider.Response{Content: "answer"}
+	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
+		MaxSteps:         1,
+		SummaryDisabled:  false,
+		MaxContextTokens: 100,
+	}, failSaveSummaryStore{})
+	_, err := a.Run(context.Background(), strings.Repeat("a", 500))
+	if err != nil {
+		t.Fatalf("Run with failing SaveSummary: %v", err)
+	}
+}
