@@ -442,3 +442,153 @@ func TestList_WorksWithoutSummary(t *testing.T) {
 		}
 	}
 }
+
+// TestLoadFrom_OffsetZero verifies offset 0 returns the full
+// history (equivalent to Load).
+func TestLoadFrom_OffsetZero(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "a"),
+		mustMessage(t, provider.RoleAssistant, "b"),
+		mustMessage(t, provider.RoleUser, "c"),
+	}
+	if err := fs.Append(ctx, "s", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := fs.LoadFrom(ctx, "s", 0)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if len(got) != len(msgs) {
+		t.Fatalf("len = %d, want %d", len(got), len(msgs))
+	}
+	for i, m := range got {
+		if m.Content != msgs[i].Content {
+			t.Errorf("[%d] = %q, want %q", i, m.Content, msgs[i].Content)
+		}
+	}
+}
+
+// TestLoadFrom_OffsetMid verifies a non-zero offset returns
+// only the tail without materializing the prefix in memory.
+func TestLoadFrom_OffsetMid(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "a"),
+		mustMessage(t, provider.RoleAssistant, "b"),
+		mustMessage(t, provider.RoleUser, "c"),
+		mustMessage(t, provider.RoleAssistant, "d"),
+		mustMessage(t, provider.RoleUser, "e"),
+	}
+	if err := fs.Append(ctx, "s", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := fs.LoadFrom(ctx, "s", 3)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("len = %d, want 2", len(got))
+	}
+	if got[0].Content != "d" || got[1].Content != "e" {
+		t.Errorf("got = %+v, want [d, e]", got)
+	}
+}
+
+// TestLoadFrom_OffsetAtEnd verifies offset == line count
+// returns an empty slice + nil error (valid state).
+func TestLoadFrom_OffsetAtEnd(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "a"),
+		mustMessage(t, provider.RoleAssistant, "b"),
+	}
+	if err := fs.Append(ctx, "s", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	got, err := fs.LoadFrom(ctx, "s", 2)
+	if err != nil {
+		t.Fatalf("LoadFrom at end: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("len = %d, want 0", len(got))
+	}
+}
+
+// TestLoadFrom_OffsetBeyondEnd verifies offset > line count
+// returns a wrapped ErrStaleCursor so Resume can fall back.
+func TestLoadFrom_OffsetBeyondEnd(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "a"),
+		mustMessage(t, provider.RoleAssistant, "b"),
+	}
+	if err := fs.Append(ctx, "s", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	_, err := fs.LoadFrom(ctx, "s", 99)
+	if err == nil {
+		t.Fatal("want error when offset > line count")
+	}
+	if !errors.Is(err, session.ErrStaleCursor) {
+		t.Errorf("err = %v, want wraps ErrStaleCursor", err)
+	}
+}
+
+// TestLoadFrom_NotExist verifies LoadFrom returns
+// os.ErrNotExist when the session file doesn't exist.
+func TestLoadFrom_NotExist(t *testing.T) {
+	fs, _ := newStore(t)
+	_, err := fs.LoadFrom(context.Background(), "nope", 0)
+	if err == nil {
+		t.Fatal("want error for missing session")
+	}
+	if !os.IsNotExist(err) {
+		t.Errorf("err = %v, want os.ErrNotExist", err)
+	}
+}
+
+// TestLoadFrom_NegativeOffset verifies a defensive check for
+// negative offsets (programming error, not user input).
+func TestLoadFrom_NegativeOffset(t *testing.T) {
+	fs, _ := newStore(t)
+	_, err := fs.LoadFrom(context.Background(), "s", -1)
+	if err == nil {
+		t.Fatal("want error for negative offset")
+	}
+}
+
+// TestLoadFrom_LargeLineAtOffset verifies a single message
+// exceeding the default scanner buffer round-trips correctly
+// even when loaded from a non-zero offset.
+func TestLoadFrom_LargeLineAtOffset(t *testing.T) {
+	fs, _ := newStore(t)
+	ctx := context.Background()
+	// Small prefix (2 lines), then one huge line.
+	if err := fs.Append(ctx, "s", []provider.Message{
+		mustMessage(t, provider.RoleUser, "prefix1"),
+		mustMessage(t, provider.RoleAssistant, "prefix2"),
+	}); err != nil {
+		t.Fatalf("Append prefix: %v", err)
+	}
+	big := strings.Repeat("x", 1_500_000)
+	if err := fs.Append(ctx, "s", []provider.Message{
+		{Role: provider.RoleUser, Content: big},
+	}); err != nil {
+		t.Fatalf("Append big: %v", err)
+	}
+	got, err := fs.LoadFrom(ctx, "s", 2)
+	if err != nil {
+		t.Fatalf("LoadFrom: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("len = %d, want 1", len(got))
+	}
+	if got[0].Content != big {
+		t.Errorf("large message mismatch, len = %d, want %d", len(got[0].Content), len(big))
+	}
+}

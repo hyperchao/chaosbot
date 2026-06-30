@@ -6,10 +6,17 @@ package session
 
 import (
 	"context"
+	"errors"
 	"os"
 
 	"chaosbot/internal/provider"
 )
+
+// ErrStaleCursor is returned by LoadFrom when the requested
+// offset exceeds the number of messages in the session file.
+// Callers (typically Resume) should treat the persisted cursor
+// as stale and fall back to a full Load.
+var ErrStaleCursor = errors.New("session: cursor beyond end of history")
 
 // Store is the persistence boundary. Implementations must be
 // safe for sequential use (the agent loop is single-threaded).
@@ -22,6 +29,15 @@ type Store interface {
 	// Load returns the full history for the given ID.
 	// Returns os.ErrNotExist if the session doesn't exist.
 	Load(ctx context.Context, id string) ([]provider.Message, error)
+
+	// LoadFrom returns history[offset:] for the given ID.
+	// offset is the count of leading messages to skip (used
+	// by Resume to avoid loading the already-summarized
+	// prefix into memory). Returns os.ErrNotExist if the
+	// session doesn't exist, or a wrapped ErrStaleCursor if
+	// offset exceeds the line count (caller should fall back
+	// to Load). offset == 0 returns the full history.
+	LoadFrom(ctx context.Context, id string, offset int) ([]provider.Message, error)
 
 	// SaveSummary persists the last computed summary. Atomic
 	// overwrite of a sidecar; absence is a valid state meaning
@@ -52,6 +68,10 @@ func (NoopStore) Append(_ context.Context, _ string, _ []provider.Message) error
 }
 
 func (NoopStore) Load(_ context.Context, _ string) ([]provider.Message, error) {
+	return nil, os.ErrNotExist
+}
+
+func (NoopStore) LoadFrom(_ context.Context, _ string, _ int) ([]provider.Message, error) {
 	return nil, os.ErrNotExist
 }
 

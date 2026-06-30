@@ -136,6 +136,26 @@ func (fs *FileStore) LoadSummary(ctx context.Context, id string) (SummaryInfo, e
 // decode via bufio.Reader to handle arbitrarily long lines
 // (large tool outputs can exceed any fixed buffer).
 func (fs *FileStore) Load(ctx context.Context, id string) ([]provider.Message, error) {
+	return fs.loadFromOffset(ctx, id, 0)
+}
+
+// LoadFrom returns history[offset:] without materializing the
+// skipped prefix in memory. Returns a wrapped ErrStaleCursor
+// when offset exceeds the line count (caller should fall back
+// to Load). offset == 0 is equivalent to Load.
+func (fs *FileStore) LoadFrom(ctx context.Context, id string, offset int) ([]provider.Message, error) {
+	if offset < 0 {
+		return nil, fmt.Errorf("session: LoadFrom: negative offset %d", offset)
+	}
+	return fs.loadFromOffset(ctx, id, offset)
+}
+
+// loadFromOffset is the shared implementation behind Load and
+// LoadFrom. offset == 0 means "load everything"; offset > 0
+// means "skip the first offset non-empty lines". Returns
+// wrapped ErrStaleCursor when offset exceeds the file's
+// non-empty line count.
+func (fs *FileStore) loadFromOffset(ctx context.Context, id string, offset int) ([]provider.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -146,16 +166,21 @@ func (fs *FileStore) Load(ctx context.Context, id string) ([]provider.Message, e
 	defer f.Close()
 	r := bufio.NewReader(f)
 	var messages []provider.Message
+	skipped := 0
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
 			trimmed := bytes.TrimRight(line, "\n")
 			if len(trimmed) > 0 {
-				var m provider.Message
-				if uerr := json.Unmarshal(trimmed, &m); uerr != nil {
-					return messages, fmt.Errorf("session: corrupt line: %w", uerr)
+				if skipped < offset {
+					skipped++
+				} else {
+					var m provider.Message
+					if uerr := json.Unmarshal(trimmed, &m); uerr != nil {
+						return messages, fmt.Errorf("session: corrupt line: %w", uerr)
+					}
+					messages = append(messages, m)
 				}
-				messages = append(messages, m)
 			}
 		}
 		if err != nil {
@@ -164,6 +189,9 @@ func (fs *FileStore) Load(ctx context.Context, id string) ([]provider.Message, e
 			}
 			return messages, fmt.Errorf("session: read: %w", err)
 		}
+	}
+	if offset > 0 && skipped < offset {
+		return nil, fmt.Errorf("session: LoadFrom offset %d: %w", offset, ErrStaleCursor)
 	}
 	return messages, nil
 }
