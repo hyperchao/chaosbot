@@ -13,7 +13,7 @@
 |---|---|
 | Phase | `10` |
 | Sub-units | `10-1` … `10-2` |
-| Status | `🟡 in progress` (sub-units 10-1 + 10-2 staged, awaiting review/commit) |
+| Status | `✅ complete` (all 2 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 06 (session), Phase 04-4b (summary cursor) |
 | Estimated total LOC | ~120 Go + ~120 test |
@@ -243,3 +243,103 @@ Files: `internal/agent/agent.go`, `internal/agent/agent_test.go`,
 - Encoding `trimmedTotal` into `SummaryInfo` (it's an agent
   internal; only `Cursor` crosses the boundary, now correct).
 - Migration script for old relative-cursor sessions.
+
+---
+
+### 实现笔记 10-1 — Store.LoadFrom + ErrStaleCursor
+
+**Files**: `internal/session/store.go` (+20), `internal/session/filestore.go` (+32),
+`internal/session/filestore_test.go` (+150)
+
+**Interface changes**:
+- `Store.LoadFrom(ctx, id, offset int) ([]Message, error)` added.
+- `ErrStaleCursor` sentinel added.
+
+**Implementation**:
+- `FileStore.Load` now delegates to `loadFromOffset(ctx, id, 0)`;
+  `LoadFrom` to `loadFromOffset(ctx, id, offset)`. Single-pass
+  `bufio.Reader.ReadBytes('\n')`, skipping non-empty lines until
+  offset is reached, decoding the rest. `ErrStaleCursor` returned
+  when `skipped < offset` after EOF.
+- `NoopStore.LoadFrom` returns `os.ErrNotExist` (DI parity with
+  Load; Resume already rejects nil Store).
+- Negative offset guarded in `LoadFrom` (defensive — programming
+  error, not user input).
+
+**Tests (6 new, all PASS)**:
+- `LoadFrom_offsetZero` — offset 0 ≡ full Load
+- `LoadFrom_offsetMid` — returns `[offset:]` only
+- `LoadFrom_offsetAtEnd` — offset == line count → empty + nil
+- `LoadFrom_offsetBeyondEnd` — `ErrStaleCursor` wrapped
+- `LoadFrom_NotExist` — `os.ErrNotExist`
+- `LoadFrom_NegativeOffset` — defensive error
+- `LoadFrom_LargeLineAtOffset` — 1.5 MB message at offset 2
+  round-trips (proves no scanner-buffer regression)
+
+**Commit**: `3f9ccb2 feat(session): add Store.LoadFrom for lazy Resume (Phase 10-1)`
+
+### 实现笔记 10-2 — Agent 集成 + 累积 cursor 修复
+
+**Files**: `internal/agent/agent.go` (+71 net), `internal/agent/agent_internal_test.go` (+218)
+
+**State changes**:
+- New field `trimmedTotal int` on `reActAgent`. Invariant:
+  `History[0]` corresponds to on-disk position `trimmedTotal`.
+  `SaveSummary.Cursor = trimmedTotal + committedPrefix` is
+  always the absolute on-disk position covered by the current
+  summary.
+- `Resume` rewritten to use `LoadFrom`. `ErrStaleCursor` from
+  `LoadFrom` falls back to full `Load` so old relative-cursor
+  sessions (Phase < 10) load successfully, just without the
+  memory savings on first resume.
+- `pruneHistory` accumulates `trimmedTotal += n` after slicing.
+- `applyWindow`: prepending `summaryMsg` now keyed on
+  `summaryMsg != nil` (was `committedPrefix > 0` — false after
+  Resume with non-zero cursor, silently dropping the summary).
+  Invariant: every `summaryMsg = &summary` in `applyWindow` is
+  immediately followed by `committedPrefix += split`, so
+  `summaryMsg != nil` ⟹ absCursor > 0 ⟹ summary covers
+  messages not in `candidate`.
+- `clearSessionState()` helper shared by `Resume` and `Reset`
+  (history + 3 summary fields; `History = a.History[:0]`
+  retains backing array for reuse).
+- `loadHistory(ctx, id, info)` helper holds the cursor / stale /
+  full-Load branching and the `summaryMsg` restoration. `info`
+  zero value (`SummaryInfo{}`) when LoadSummary returns
+  `os.ErrNotExist` short-circuits naturally — no special case
+  needed in `Resume`.
+
+**Tests (5 new, all PASS)**:
+- `Resume_LazyLoadFromCursor` — 10-msg file + cursor=6 →
+  `History` has 4, `trimmedTotal=6`, `summaryMsg` restored
+- `Resume_StaleCursor_FallsBackToFull` — cursor=99 on 3-msg
+  file → `ErrStaleCursor` → full Load, `trimmedTotal=0`,
+  `summaryMsg=nil`
+- `Resume_NoSummary_LoadsFull` — no sidecar → full Load,
+  `trimmedTotal=0`
+- `PruneHistoryCursorIsCumulative` — **the bug fix**: two Run
+  cycles, assert second `SummaryInfo.Cursor` strictly greater
+  than first. Pre-populated one turn so `splitPoint` finds a
+  cut and summarization triggers reliably.
+- `Reset_ClearsTrimmedTotal` — Reset zeros the new field
+
+**偏差 from spec**:
+- `applyWindow` spec said "`committedPrefix>0 || trimmedTotal>0`";
+  final code is `summaryMsg != nil` (review found the OR was
+  misleading — neither condition independently proves the
+  summary is non-stale; the real invariant is the assignment
+  ordering inside `applyWindow`).
+- `Resume` ended up splitting into Resume + `loadHistory` +
+  `clearSessionState` instead of inlining everything (review
+  found the inline version leaked helper internals to the
+  caller via `trimmedTotal > 0` check).
+
+**Follow-ups (deferred)**:
+- Stale cursor fallback is silent. If we ever see real sessions
+  hitting it (cross-device sync, manual truncate), add
+  `slog.Warn` in the fallback branch.
+- No metric for cumulative cursor growth — current state is
+  inspectable via `LoadSummary.Cursor`, no separate counter
+  needed.
+
+**Commit**: `350e5bd fix(agent): cumulative summary cursor + lazy Resume (Phase 10-2)`
