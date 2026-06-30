@@ -263,8 +263,7 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 	if a.sessionID == "" {
 		id, err := session.NewID()
 		if err != nil {
-			// Log via stderr? For now, swallow — the in-memory
-			// state is correct; persistence is best-effort.
+			slog.Warn("saveOnSuccess: NewID failed", "err", err)
 			return
 		}
 		a.sessionID = id

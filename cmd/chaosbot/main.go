@@ -8,6 +8,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 
 	"github.com/hyperchao/di"
@@ -39,6 +40,8 @@ func main() {
 		fmt.Fprintln(os.Stderr, "chaosbot:", err)
 		os.Exit(1)
 	}
+
+	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
 
 	cliApp := di.GetDI[*cli.CLI](buildContainer(cfg))
 
