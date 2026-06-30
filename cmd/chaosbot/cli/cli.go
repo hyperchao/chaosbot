@@ -12,10 +12,14 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
+
+	"github.com/peterh/liner" // why: pure-Go readline for REPL (history, line-editing, tab-completion); docker/geth also use it
+	"golang.org/x/term"
 )
 
 // CLI is the wired-up command-line surface. All fields are
@@ -124,16 +128,49 @@ func (c *CLI) versionCmd(args []string) error {
 	return nil
 }
 
-// replCmd drives the read-eval-print loop. Session persistence
-// is owned by the agent; the CLI just dispatches each line to
-// Agent.Run and prints the reply. Slash commands: /reset calls
-// Agent.Reset (which deletes the session and starts fresh),
-// /exit returns nil, /help prints the available commands.
-// EOF (empty input) is treated like /exit.
+// replCmd drives the read-eval-print loop. When stdin is a
+// terminal, it uses liner for history, line-editing and
+// tab-completion; otherwise it falls back to bufio.Scanner
+// (pipe/redirect/test fakes).
 func (c *CLI) replCmd() error {
 	if c.Agent == nil {
 		return errors.New("repl: no agent available (config not loaded)")
 	}
+	if l, ok := tryNewLiner(c.In); ok {
+		defer l.Close()
+		return c.replLiner(l)
+	}
+	return c.replScanner()
+}
+
+// replLiner runs the REPL with liner (interactive terminal).
+// liner provides history, Ctrl-A/E/B/F, and tab-completion.
+func (c *CLI) replLiner(l *liner.State) error {
+	fmt.Fprintln(c.Out, "chaosbot REPL — type '/help' for commands, Ctrl-D to exit")
+	l.SetCtrlCAborts(true)
+	l.SetCompleter(replComplete)
+	for {
+		line, err := l.Prompt("> ")
+		if err != nil {
+			if errors.Is(err, liner.ErrPromptAborted) {
+				continue
+			}
+			return nil
+		}
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		l.AppendHistory(line)
+		if quit := c.replDispatch(line); quit {
+			return nil
+		}
+	}
+}
+
+// replScanner runs the REPL with bufio.Scanner (non-interactive
+// stdin: pipes, redirection, test fakes).
+func (c *CLI) replScanner() error {
 	fmt.Fprintln(c.Out, "chaosbot REPL — type '/help' for commands, Ctrl-D to exit")
 	scanner := bufio.NewScanner(c.In)
 	for {
@@ -148,27 +185,75 @@ func (c *CLI) replCmd() error {
 		if line == "" {
 			continue
 		}
-		switch line {
-		case "/reset":
-			c.Agent.Reset()
-			fmt.Fprintln(c.Out, "history cleared")
-			continue
-		case "/exit", "/quit":
+		if quit := c.replDispatch(line); quit {
 			return nil
-		case "/help":
-			fmt.Fprintln(c.Out, "commands:")
-			fmt.Fprintln(c.Out, "  /reset    clear conversation history")
-			fmt.Fprintln(c.Out, "  /exit     leave the REPL (alias: /quit)")
-			fmt.Fprintln(c.Out, "  /help     show this message")
-			continue
 		}
-		reply, err := c.Agent.Run(context.Background(), line)
-		if err != nil {
-			fmt.Fprintln(c.ErrOut, "error:", agent.HumanError(err))
-			continue
-		}
-		fmt.Fprintln(c.Out, reply)
 	}
+}
+
+// replDispatch handles one REPL line. Returns true if the REPL
+// should exit.
+func (c *CLI) replDispatch(line string) bool {
+	switch line {
+	case "/reset":
+		c.Agent.Reset()
+		fmt.Fprintln(c.Out, "history cleared")
+		return false
+	case "/exit", "/quit":
+		return true
+	case "/help":
+		fmt.Fprintln(c.Out, "commands:")
+		fmt.Fprintln(c.Out, "  /reset    clear conversation history")
+		fmt.Fprintln(c.Out, "  /exit     leave the REPL (alias: /quit)")
+		fmt.Fprintln(c.Out, "  /help     show this message")
+		fmt.Fprintln(c.Out, "  /tools    list registered tools")
+		return false
+	case "/tools":
+		fmt.Fprintln(c.Out, "(tool listing not yet available)")
+		return false
+	}
+	reply, err := c.Agent.Run(context.Background(), line)
+	if err != nil {
+		fmt.Fprintln(c.ErrOut, "error:", agent.HumanError(err))
+		return false
+	}
+	fmt.Fprintln(c.Out, reply)
+	return false
+}
+
+// replComplete returns tab completions for the current line.
+// Matches slash commands when the line starts with "/".
+func replComplete(line string) []string {
+	if !strings.HasPrefix(line, "/") {
+		return nil
+	}
+	cmds := []string{"/reset", "/exit", "/quit", "/help", "/tools"}
+	var matches []string
+	for _, cmd := range cmds {
+		if strings.HasPrefix(cmd, line) {
+			matches = append(matches, cmd)
+		}
+	}
+	return matches
+}
+
+// tryNewLiner returns a *liner.State if r is a terminal and
+// the platform supports interactive input, or nil/false.
+func tryNewLiner(r io.Reader) (*liner.State, bool) {
+	f, ok := r.(*os.File)
+	if !ok {
+		return nil, false
+	}
+	if !isTerminal(f.Fd()) {
+		return nil, false
+	}
+	return liner.NewLiner(), true
+}
+
+// isTerminal returns whether the given file descriptor is a
+// terminal.
+func isTerminal(fd uintptr) bool {
+	return term.IsTerminal(int(fd))
 }
 
 // maskKey redacts the middle of an API key for display: the
