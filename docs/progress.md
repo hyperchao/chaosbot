@@ -51,6 +51,8 @@ must update the table below when it starts, finishes, or changes scope.
 | 08-1  | 测试补全(边界 + 错误路径) | ✅ | 06-30 | 06-30 | ~150 | 11/11 | 新增 agent_internal_test.go(RoleTag 100%)/agent_test.go(saveOnSuccess 失败路径)/session_test.go(SaveSummary/Append/Delete 失败路径)/openai_internal_test.go(toOpenAIMessage/EstimateTokens);见 phase-08-1 实现笔记 |
 | 08-2  | README/config 完善 + 性能基线回填 (bench 有意跳过) | ✅ | 06-30 | 06-30 | ~50 | 0/0 | README 重写;measure.sh 修复;performance.md 基线回填;bench 子命令有意跳过(见 phase-08-2 spec) | |
 | 08-3  | REPL readline（历史 + 行编辑 + Tab 补全） | ✅ | 06-30 | 06-30 | ~110 | 5/5 | `github.com/chzyer/readline` 替代 bufio.Scanner;终端检测自动退回到 scanner;自定义 replCompleter;见 phase-08-3 实现笔记 |
+| 10-1  | session.Store.LoadFrom + ErrStaleCursor | 🟡 | 06-30 | – | ~50 | 6/6 | `LoadFrom(ctx,id,offset)` 流式跳行;`ErrStaleCursor` 当 offset > 行数;FileStore + NoopStore 实现;6 测:offset0/mid/atEnd/beyondEnd/notExist/negative/largeLineAtOffset |
+| 10-2  | pruneHistory cursor 累积化 + Resume 懒加载 | 🟡 | 06-30 | – | ~70 | 5/5 | 新字段 `trimmedTotal`(累计已剪绝对偏移);Resume 走 `LoadFrom`,`ErrStaleCursor` 触发 fallback Load;`SaveSummary.Cursor = trimmedTotal+committedPrefix`(始终绝对);`pruneHistory` 累加 `trimmedTotal`;`applyWindow` summaryMsg 条件放宽(`committedPrefix>0 \|\| trimmedTotal>0`)以支持 Resume 后 view 仍带 summary |
 
 ## 200-LOC 守门(每轮 review 预算)
 

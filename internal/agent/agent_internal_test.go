@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -596,5 +597,222 @@ func TestRoleTag(t *testing.T) {
 		if got != tt.want {
 			t.Errorf("roleTag(%q) = %q, want %q", tt.role, got, tt.want)
 		}
+	}
+}
+
+// newTestAgentWithStore wires a reActAgent with an explicit
+// session.Store (e.g. a FileStore) and a programmatic response
+// script. Used by Phase 10 tests that need to assert persistence
+// side effects alongside internal state (trimmedTotal, History).
+func newTestAgentWithStore(t *testing.T, store session.Store, cfg Config, script []providerfake.Call) *reActAgent {
+	t.Helper()
+	fp := &providerfake.Provider{NameStr: "test", Script: script}
+	return &reActAgent{
+		Provider: fp,
+		Registry: NewRegistry(),
+		Cfg:      cfg,
+		Store:    store,
+	}
+}
+
+// TestResume_LazyLoadFromCursor verifies Resume with a
+// non-zero SummaryInfo.Cursor calls Store.LoadFrom so only
+// the un-summarized tail lands in a.History. Memory is the
+// whole point — the leading messages must not be loaded.
+func TestResume_LazyLoadFromCursor(t *testing.T) {
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+	const total = 10
+	const cursor = 6
+	msgs := make([]provider.Message, total)
+	for i := range msgs {
+		msgs[i] = NewUserMessage(fmt.Sprintf("m%d", i))
+	}
+	if err := fs.Append(ctx, "lazy", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := fs.SaveSummary(ctx, "lazy", session.SummaryInfo{
+		Content: "SUMMARIZED",
+		Cursor:  cursor,
+		Tokens:  1,
+	}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	a := newTestAgentWithStore(t, fs, Config{MaxSteps: 1}, []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	})
+	if err := a.Resume(ctx, "lazy"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got := len(a.History); got != total-cursor {
+		t.Errorf("History len = %d, want %d (cursor=%d should skip prefix)", got, total-cursor, cursor)
+	}
+	if a.History[0].Content != fmt.Sprintf("m%d", cursor) {
+		t.Errorf("History[0] = %q, want m%d", a.History[0].Content, cursor)
+	}
+	if a.trimmedTotal != cursor {
+		t.Errorf("trimmedTotal = %d, want %d", a.trimmedTotal, cursor)
+	}
+	// summaryMsg restored from disk; committedPrefix stays 0
+	// (no in-memory messages are covered by the summary).
+	if a.summaryMsg == nil || a.summaryMsg.Content != "SUMMARIZED" {
+		t.Errorf("summaryMsg = %+v, want {SUMMARIZED}", a.summaryMsg)
+	}
+	if a.committedPrefix != 0 {
+		t.Errorf("committedPrefix = %d, want 0", a.committedPrefix)
+	}
+}
+
+// TestResume_StaleCursor_FallsBackToFull verifies Resume with
+// a Cursor > line count treats the summary as stale: loads the
+// full file, discards the summary cursor, keeps trimmedTotal=0.
+// This protects against externally-truncated session files and
+// old-format summaries (Phase < 10 used relative cursors).
+func TestResume_StaleCursor_FallsBackToFull(t *testing.T) {
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+	msgs := []provider.Message{
+		NewUserMessage("a"),
+		NewAssistantMessage("b", nil),
+		NewUserMessage("c"),
+	}
+	if err := fs.Append(ctx, "stale", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	// Cursor far beyond the file end → ErrStaleCursor from
+	// LoadFrom → fallback to full Load.
+	if err := fs.SaveSummary(ctx, "stale", session.SummaryInfo{
+		Content: "GHOST",
+		Cursor:  99,
+		Tokens:  1,
+	}); err != nil {
+		t.Fatalf("SaveSummary: %v", err)
+	}
+	a := newTestAgentWithStore(t, fs, Config{MaxSteps: 1}, []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	})
+	if err := a.Resume(ctx, "stale"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got := len(a.History); got != len(msgs) {
+		t.Errorf("History len = %d, want %d (full load)", got, len(msgs))
+	}
+	if a.trimmedTotal != 0 {
+		t.Errorf("trimmedTotal = %d, want 0 after stale fallback", a.trimmedTotal)
+	}
+	// Summary content discarded too — cursor invalidates the
+	// whole SummaryInfo, not just the offset.
+	if a.summaryMsg != nil {
+		t.Errorf("summaryMsg = %+v, want nil after stale cursor", a.summaryMsg)
+	}
+}
+
+// TestResume_NoSummary_LoadsFull verifies Resume on a session
+// with no SummaryInfo sidecar falls back to a full Load with
+// trimmedTotal=0 — the existing behavior before Phase 10.
+func TestResume_NoSummary_LoadsFull(t *testing.T) {
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+	msgs := []provider.Message{
+		NewUserMessage("a"),
+		NewAssistantMessage("b", nil),
+	}
+	if err := fs.Append(ctx, "nosum", msgs); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	a := newTestAgentWithStore(t, fs, Config{MaxSteps: 1}, []providerfake.Call{
+		{Resp: &provider.Response{Content: "ok"}},
+	})
+	if err := a.Resume(ctx, "nosum"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if got := len(a.History); got != len(msgs) {
+		t.Errorf("History len = %d, want %d (full load, no summary)", got, len(msgs))
+	}
+	if a.trimmedTotal != 0 {
+		t.Errorf("trimmedTotal = %d, want 0", a.trimmedTotal)
+	}
+}
+
+// TestPruneHistoryCursorIsCumulative verifies the Phase 10 bug
+// fix: across two Run calls (each triggering a prune), the
+// second SaveSummary.Cursor on disk must be strictly greater
+// than the first. Before the fix, the second SaveSummary
+// overwrote the cursor with a smaller relative value, losing
+// coverage of already-trimmed messages.
+func TestPruneHistoryCursorIsCumulative(t *testing.T) {
+	fs, err := session.NewFileStore(t.TempDir())
+	if err != nil {
+		t.Fatalf("NewFileStore: %v", err)
+	}
+	ctx := context.Background()
+	// Pre-populate with one turn so candidate has ≥2 turns after
+	// the new prompt and splitPoint can find a cut.
+	base := []provider.Message{
+		{Role: provider.RoleUser, Content: strings.Repeat("a", 200)},
+		{Role: provider.RoleAssistant, Content: strings.Repeat("b", 200)},
+	}
+	if err := fs.Append(ctx, "pre", base); err != nil {
+		t.Fatalf("Append base: %v", err)
+	}
+	// 4 calls: Run1 → SUM-A, ok-1; Run2 → SUM-B, ok-2.
+	script := []providerfake.Call{
+		{Resp: &provider.Response{Content: "SUM-A"}},
+		{Resp: &provider.Response{Content: "ok-1"}},
+		{Resp: &provider.Response{Content: "SUM-B"}},
+		{Resp: &provider.Response{Content: "ok-2"}},
+	}
+	a := newTestAgentWithStore(t, fs, Config{
+		MaxSteps:         5,
+		MaxContextTokens: 80,
+	}, script)
+	if err := a.Resume(ctx, "pre"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := a.Run(ctx, strings.Repeat("c", 200)); err != nil {
+		t.Fatalf("Run 1: %v", err)
+	}
+	id := a.SessionID()
+	cursor1, err := fs.LoadSummary(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadSummary after Run 1: %v", err)
+	}
+	if cursor1.Cursor == 0 {
+		t.Fatal("Run 1 cursor = 0, expected some commits")
+	}
+	if _, err := a.Run(ctx, strings.Repeat("d", 200)); err != nil {
+		t.Fatalf("Run 2: %v", err)
+	}
+	cursor2, err := fs.LoadSummary(ctx, id)
+	if err != nil {
+		t.Fatalf("LoadSummary after Run 2: %v", err)
+	}
+	// After Run 1: SaveSummary writes (trimmedTotal+committedPrefix);
+	// prune bumps trimmedTotal. After Run 2: SaveSummary writes
+	// (new trimmedTotal + new committedPrefix) which must be strictly
+	// greater than cursor1.Cursor (Run 2 adds at least 2 messages).
+	if cursor2.Cursor <= cursor1.Cursor {
+		t.Errorf("cursor regressed: %d → %d (must be cumulative)", cursor1.Cursor, cursor2.Cursor)
+	}
+}
+
+// TestReset_ClearsTrimmedTotal verifies Reset zeros the new
+// trimmedTotal field along with the existing state.
+func TestReset_ClearsTrimmedTotal(t *testing.T) {
+	a, _ := newTestAgent(t, nil)
+	a.History = []provider.Message{NewUserMessage("x")}
+	a.trimmedTotal = 42
+	a.Reset()
+	if a.trimmedTotal != 0 {
+		t.Errorf("trimmedTotal = %d, want 0 after Reset", a.trimmedTotal)
 	}
 }

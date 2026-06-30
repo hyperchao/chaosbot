@@ -88,46 +88,70 @@ type reActAgent struct {
 	committedPrefix int               // count of leading messages from a.History
 	// already represented by summaryMsg (if set)
 	// or just trimmed away
+	trimmedTotal int // absolute count of on-disk messages already discarded
+	// (via prune or Resume cursor). History[0] corresponds
+	// to disk position trimmedTotal. SaveSummary uses
+	// trimmedTotal + committedPrefix so the persisted
+	// cursor is always absolute.
 
 	sessionID     string
 	sessionOffset int
 }
 
 // Resume implements Agent. Loads a saved session by id:
-// reads the full history from Store, replaces the
-// in-memory history, and sets sessionID/offset so the
-// next Run continues from the loaded state and saves
-// back to the same id. Returns os.ErrNotExist (wrapped)
-// if the session doesn't exist; returns nil if Store
-// is nil (no persistence configured).
+// reads the persisted summary, then loads only the
+// not-yet-summarized tail of the history into memory, and
+// sets sessionID/offset so the next Run continues from the
+// loaded state and saves back to the same id. Returns
+// os.ErrNotExist (wrapped) if the session doesn't exist;
+// returns nil if Store is nil (no persistence configured).
+// Falls back to a full Load when the persisted cursor is
+// stale (offset beyond file end) so old or corrupted
+// summaries don't break Resume.
 func (a *reActAgent) Resume(ctx context.Context, id string) error {
 	if a.Store == nil {
 		return fmt.Errorf("agent: resume %s: no session store configured", id)
 	}
-	history, err := a.Store.Load(ctx, id)
-	if err != nil {
+	a.clearSessionState()
+	info, err := a.Store.LoadSummary(ctx, id)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("agent: resume %s summary: %w", id, err)
+	}
+	if err := a.loadHistory(ctx, id, info); err != nil {
 		return fmt.Errorf("agent: resume %s: %w", id, err)
 	}
-	a.History = history
-	a.summaryMsg = nil
-	a.committedPrefix = 0
-	info, err := a.Store.LoadSummary(ctx, id)
-	switch {
-	case err == nil:
-		if info.Cursor > 0 && info.Cursor <= len(history) {
-			a.committedPrefix = info.Cursor
+	a.sessionID = id
+	a.sessionOffset = len(a.History)
+	return nil
+}
+
+// loadHistory populates a.History and a.summaryMsg from the
+// store. info.Cursor > 0 tries Store.LoadFrom for memory
+// savings; a stale cursor (beyond file end) falls back to
+// Store.Load so old or corrupted summaries don't break
+// Resume. info.Content is restored into a.summaryMsg only
+// when LoadFrom succeeds (cursor genuinely covered a prefix).
+func (a *reActAgent) loadHistory(ctx context.Context, id string, info session.SummaryInfo) error {
+	if info.Cursor > 0 {
+		tail, err := a.Store.LoadFrom(ctx, id, info.Cursor)
+		if err == nil {
+			a.History = tail
+			a.trimmedTotal = info.Cursor
 			if info.Content != "" {
 				a.summaryMsg = &provider.Message{Role: provider.RoleUser, Content: info.Content}
 			}
+			return nil
 		}
-		// Stale cursor (info.Cursor > len(history)): discard.
-	case errors.Is(err, os.ErrNotExist):
-		// No summary yet — fine.
-	default:
-		return fmt.Errorf("agent: resume %s summary: %w", id, err)
+		if !errors.Is(err, session.ErrStaleCursor) {
+			return err
+		}
+		// Stale cursor — fall through to full Load below.
 	}
-	a.sessionID = id
-	a.sessionOffset = len(history)
+	full, err := a.Store.Load(ctx, id)
+	if err != nil {
+		return err
+	}
+	a.History = full
 	return nil
 }
 
@@ -279,9 +303,13 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 		// back the history append. Worst case: Resume loses the
 		// summary and re-summarizes lazily.
 		tokens := provider.EstimateTokensDefault(a.summaryMsg.Content)
+		// Cursor must be the absolute on-disk position covered
+		// by the current summary; committedPrefix is relative
+		// to the in-memory slice (zero after a prune).
+		absCursor := a.trimmedTotal + a.committedPrefix
 		if err := a.Store.SaveSummary(ctx, a.sessionID, session.SummaryInfo{
 			Content: a.summaryMsg.Content,
-			Cursor:  a.committedPrefix,
+			Cursor:  absCursor,
 			Tokens:  tokens,
 		}); err != nil {
 			slog.Warn("saveOnSuccess: SaveSummary failed", "err", err, "sessionID", a.sessionID)
@@ -292,8 +320,9 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 		// cursor so Resume knows how many leading messages are
 		// already committed to storage and need not be re-sent
 		// to the LLM or re-summarized.
+		absCursor := a.trimmedTotal + a.committedPrefix
 		if err := a.Store.SaveSummary(ctx, a.sessionID, session.SummaryInfo{
-			Cursor: a.committedPrefix,
+			Cursor: absCursor,
 		}); err != nil {
 			slog.Warn("saveOnSuccess: SaveSummary(cursor only) failed", "err", err, "sessionID", a.sessionID)
 		}
@@ -306,7 +335,9 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 // of a.History. Those messages are already on disk and are never
 // sent to the LLM again, so keeping them in memory is pure waste.
 // sessionOffset and committedPrefix are adjusted to keep the
-// remaining slice consistent.
+// remaining slice consistent; trimmedTotal accumulates the
+// absolute on-disk position so future SaveSummary calls remain
+// cumulative even after repeated prunes.
 func (a *reActAgent) pruneHistory() {
 	n := a.committedPrefix
 	if n <= 0 || n > len(a.History) {
@@ -315,6 +346,7 @@ func (a *reActAgent) pruneHistory() {
 	a.History = a.History[n:]
 	a.committedPrefix = 0
 	a.sessionOffset = max(0, a.sessionOffset-n)
+	a.trimmedTotal += n
 }
 
 // Reset implements Agent. It drops the in-memory
@@ -324,14 +356,23 @@ func (a *reActAgent) pruneHistory() {
 // session id. The agent's Provider, Registry, Cfg, and
 // Store are unaffected.
 func (a *reActAgent) Reset() {
-	a.History = a.History[:0]
-	a.summaryMsg = nil
-	a.committedPrefix = 0
+	a.clearSessionState()
 	if a.Store != nil && a.sessionID != "" {
 		_ = a.Store.Delete(context.Background(), a.sessionID)
 	}
 	a.sessionID = ""
 	a.sessionOffset = 0
+}
+
+// clearSessionState resets the per-conversation fields (history
+// and summary-related offsets) to their zero values. The
+// backing array of a.History is retained so subsequent
+// appends can reuse the capacity without re-allocating.
+func (a *reActAgent) clearSessionState() {
+	a.History = a.History[:0]
+	a.summaryMsg = nil
+	a.committedPrefix = 0
+	a.trimmedTotal = 0
 }
 
 // step performs one ReAct iteration: apply the sliding
@@ -529,7 +570,7 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 	candidate := history[a.committedPrefix:]
 
 	view := candidate
-	if a.summaryMsg != nil && a.committedPrefix > 0 {
+	if a.summaryMsg != nil {
 		view = append([]provider.Message{*a.summaryMsg}, candidate...)
 	}
 	if !forceCompress && a.estimateHistoryTokens(view) <= budget {
