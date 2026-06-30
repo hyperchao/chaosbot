@@ -597,23 +597,36 @@ func TestResume_NoSummary_StillWorks(t *testing.T) {
 
 // TestSaveOnSuccess_PersistsSummary verifies that when the
 // agent's summaryMsg is set during a step, saveOnSuccess
-// writes it to the sidecar.
+// writes it to the sidecar. Uses multi-turn history so
+// applyWindow can find a turn boundary to split at.
 func TestSaveOnSuccess_PersistsSummary(t *testing.T) {
 	fp := providerfake.New("save-sum")
-	// 1st call: ErrContextLength (estimation wrong → reactive path).
-	// 2nd call: summarizeHistory → "REDUCED SUMMARY".
-	// 3rd call: retried step → "ok".
+	// 1st call: proactive summarization (applyWindow detects budget
+	// exceeded and calls summarizeHistory).
+	// 2nd call: retried step → "ok".
 	fp.Script = []providerfake.Call{
-		{Err: provider.ErrContextLength},
 		{Resp: &provider.Response{Content: "REDUCED SUMMARY"}},
 		{Resp: &provider.Response{Content: "ok"}},
 	}
 	fs, _ := session.NewFileStore(t.TempDir())
 	ctx := context.Background()
+	// Pre-populate store with 1 turn so candidate has ≥2 turns
+	// after adding the new prompt and applyWindow can find a cut point.
+	base := []provider.Message{
+		{Role: provider.RoleUser, Content: strings.Repeat("a", 200)},
+		{Role: provider.RoleAssistant, Content: strings.Repeat("b", 200)},
+	}
+	if err := fs.Append(ctx, "pre", base); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
 	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
-		MaxSteps: 5,
+		MaxSteps:         5,
+		MaxContextTokens: 80, // tight enough to trigger windowing, loose enough for summary+recent
 	}, fs)
-	if _, err := a.Run(ctx, "hi"); err != nil {
+	if err := a.Resume(ctx, "pre"); err != nil {
+		t.Fatalf("Resume: %v", err)
+	}
+	if _, err := a.Run(ctx, strings.Repeat("c", 200)); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	id := a.SessionID()
@@ -627,9 +640,6 @@ func TestSaveOnSuccess_PersistsSummary(t *testing.T) {
 	if got.Content != "REDUCED SUMMARY" {
 		t.Errorf("got.Content = %q, want REDUCED SUMMARY", got.Content)
 	}
-	// Cursor is 0 for reactive summarization (summary IS the
-	// whole history now); non-zero for proactive (summary covers
-	// a prefix). We just verify the file was written.
 }
 
 // TestReset_ClearsSummaryCursor verifies Reset zeros the

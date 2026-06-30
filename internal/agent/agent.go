@@ -409,7 +409,7 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message, force
 // the latest applyWindow. Called only after all fallible
 // operations in step succeed.
 func (a *reActAgent) commitTrim(trim int) {
-	a.committedPrefix = min(trim, len(a.History))
+	a.committedPrefix = trim
 }
 
 // summarizeHistory calls the LLM to summarize the given
@@ -526,54 +526,55 @@ func (a *reActAgent) summaryEnabled() bool {
 // Resume clear it.
 func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message, forceCompress bool) ([]provider.Message, int, error) {
 	budget := a.contextBudget()
-	start := a.committedPrefix
-	candidate := history[start:]
+	candidate := history[a.committedPrefix:]
+
 	view := candidate
 	if a.summaryMsg != nil && a.committedPrefix > 0 {
 		view = append([]provider.Message{*a.summaryMsg}, candidate...)
 	}
 	if !forceCompress && a.estimateHistoryTokens(view) <= budget {
-		return view, start, nil
+		return view, a.committedPrefix, nil
 	}
-	// Budget exceeded. Try summarizing the early half of candidate first.
-	// Split at the last complete turn boundary at or before
-	// the midpoint of candidate — this preserves turn integrity
-	// so the LLM receives coherent user+assistant+tool sequences.
+
+	// Budget exceeded. Try LLM summarization first.
 	if !a.Cfg.SummaryDisabled {
-		ends := turnEnds(candidate)
-		// Aggressive split: summarize 2/3 of candidate so summary+recent
-		// is more likely to fit budget on the first try, avoiding the
-		// "summary still too big" path that discards the LLM call.
-		target := len(candidate) * 2 / 3
-		// BinarySearch finds target exactly. If missing, i is the
-		// insertion point and ends[i-1] is the largest end <= target.
-		// If no end qualifies, fall back to the last end.
-		i, found := slices.BinarySearch(ends, target)
-		split := 0
-		if found {
-			split = ends[i]
-		} else if i > 0 {
-			split = ends[i-1]
-		} else if len(ends) > 0 {
-			split = ends[len(ends)-1]
+		if split := a.splitPoint(candidate); split > 0 {
+			summary, err := a.summarizeHistory(ctx, candidate[:split])
+			if err != nil {
+				return nil, 0, fmt.Errorf("agent: summarize: %w", err)
+			}
+			reduced := append([]provider.Message{summary}, candidate[split:]...)
+			if a.estimateHistoryTokens(reduced) <= budget {
+				a.summaryMsg = &summary
+				a.committedPrefix += split
+				return reduced, a.committedPrefix, nil
+			}
+			// Summary still too big — discard. Leave a.summaryMsg and
+			// a.committedPrefix untouched: nothing was actually committed.
 		}
-		early := candidate[:split]
-		recent := candidate[split:]
-		summary, err := a.summarizeHistory(ctx, early)
-		if err != nil {
-			return nil, 0, fmt.Errorf("agent: summarize: %w", err)
-		}
-		candidateWithSummary := append([]provider.Message{summary}, recent...)
-		if a.estimateHistoryTokens(candidateWithSummary) <= budget {
-			a.summaryMsg = &summary
-			a.committedPrefix = start + split
-			return candidateWithSummary, start + split, nil
-		}
-		// Summary still too big — discard. Leave a.summaryMsg and
-		// a.committedPrefix untouched: nothing was actually committed.
 	}
+
 	result := dropOldestTurns(candidate, budget, a.estimateHistoryTokens)
 	return result, len(history) - len(result), nil
+}
+
+// splitPoint returns the index into candidate that divides it
+// at a turn boundary for summarization. Returns 0 if no valid
+// split exists (single turn — summarization won't help).
+func (a *reActAgent) splitPoint(candidate []provider.Message) int {
+	ends := turnEnds(candidate)
+	if len(ends) == 0 {
+		return 0
+	}
+	target := len(candidate) * 2 / 3
+	i, found := slices.BinarySearch(ends, target)
+	if found {
+		return ends[i]
+	}
+	if i > 0 {
+		return ends[i-1]
+	}
+	return 0
 }
 
 // dropOldestTurns removes whole turns from the head
@@ -596,10 +597,12 @@ func dropOldestTurns(history []provider.Message, budget int, estimate func([]pro
 	return history[ends[len(ends)-1]:]
 }
 
-// turnEnds returns the indices of all user messages that
-// terminate a turn — i.e., every user message that has another
-// user message after it. These are valid split points that
-// preserve turn integrity when dividing history.
+// turnEnds returns the indices of user messages after the first
+// — valid cut points for dropping whole turns from the head of
+// history while preserving turn integrity. The first user message
+// is not included because dropping everything before it would
+// leave nothing, and dropping it without the assistant/tool
+// messages that follow would break the turn.
 func turnEnds(history []provider.Message) []int {
 	var ends []int
 	seen := 0
