@@ -80,9 +80,10 @@ sync 之前 crash 或 sync 失败：
 
 ## 002 — REPL 缺 readline 支持（arrow keys, history, line editing）
 
-**Status**: open
+**Status**: ✅ closed
 **Found**: 2026-06-17 (user feedback during 09 testing)
-**Severity**: low (MVP 可用, UX 差)
+**Resolved**: 2026-06-30 (Phase 08-3, commit `ea3d68d`)
+**Severity**: low
 **Affects**: `cmd/chaosbot/cli/cli.go`
 
 ### 问题
@@ -139,3 +140,11 @@ crash), 真实用户使用一段时间后看反馈再决定。
 - 用户多次抱怨 "上下方向键没用"
 - REPL 用作日常开发工具 (而非偶尔试一下)
 - 多人协作需要 history 共享
+
+### 决议
+
+已实现（Phase 08-3, 2026-06-30）：
+- 选用 `peterh/liner` v1.2.2（非 chzyer/readline，后者在 macOS 有光标定位 bug 且 2 年未维护）
+- 支持 arrow keys ↑/↓ 历史、←/→ 行内编辑、Ctrl-A/E/B/F、Tab 补全 `/` 命令
+- 终端检测自动回退到 bufio.Scanner（pipe/CI/test 兼容）
+- 见 `docs/phases/phase-08-3-repl-readline.md`
