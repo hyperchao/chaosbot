@@ -300,6 +300,22 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 		}
 	}
 	a.sessionOffset = len(history)
+	a.pruneHistory()
+}
+
+// pruneHistory releases committedPrefix messages from the head
+// of a.History. Those messages are already on disk and are never
+// sent to the LLM again, so keeping them in memory is pure waste.
+// sessionOffset and committedPrefix are adjusted to keep the
+// remaining slice consistent.
+func (a *reActAgent) pruneHistory() {
+	n := a.committedPrefix
+	if n <= 0 || n > len(a.History) {
+		return
+	}
+	a.History = a.History[n:]
+	a.committedPrefix = 0
+	a.sessionOffset = max(0, a.sessionOffset-n)
 }
 
 // Reset implements Agent. It drops the in-memory
