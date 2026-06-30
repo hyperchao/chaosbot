@@ -270,13 +270,13 @@ func maskKey(s string) string {
 // emit chain-of-thought in these tags; the user only needs the final
 // answer after the closing tag.
 func stripThink(s string) string {
-	start := strings.Index(s, "<think>")
-	if start == -1 {
+	before, after, ok := strings.Cut(s, "<think>")
+	if !ok {
 		return s
 	}
-	end := strings.Index(s, "</think>")
-	if end == -1 {
+	_, after, ok = strings.Cut(after, "</think>")
+	if !ok {
 		return s
 	}
-	return strings.TrimSpace(s[:start] + s[end+len("</think>"):])
+	return strings.TrimSpace(before + after)
 }

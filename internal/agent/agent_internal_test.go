@@ -23,7 +23,6 @@ func newTestAgent(t *testing.T, tools map[string]string) (*reActAgent, *provider
 	t.Helper()
 	reg := NewRegistry()
 	for name, resp := range tools {
-		name, resp := name, resp
 		reg.Register(&agentfake.Tool{
 			NameStr: name,
 			InvokeFunc: func(_ context.Context, _ json.RawMessage) (string, error) {

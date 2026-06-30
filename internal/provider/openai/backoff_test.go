@@ -13,7 +13,7 @@ func TestBackoffWithJitter_NonDeterministic(t *testing.T) {
 	// Collect several samples for the same attempt.
 	// At least 2 of them should differ.
 	seen := map[time.Duration]bool{}
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		d := backoffWithJitter(2, base)
 		seen[d] = true
 	}
@@ -33,7 +33,7 @@ func TestBackoffWithJitter_Bounds(t *testing.T) {
 		min := base << attempt
 		max := min + base
 		// Try a few times to cover the jitter range.
-		for i := 0; i < 50; i++ {
+		for range 50 {
 			d := backoffWithJitter(attempt, base)
 			if d < min {
 				t.Errorf("attempt %d: delay %v < min %v", attempt, d, min)
@@ -53,7 +53,7 @@ func TestBackoffWithJitter_Bounds(t *testing.T) {
 func TestBackoffWithJitter_OverflowClamp(t *testing.T) {
 	base := 1 * time.Second
 	// attempt=63 with base=1s would overflow int64.
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		d := backoffWithJitter(63, base)
 		if d > 61*time.Second {
 			t.Errorf("attempt 63: delay %v > 61s (clamp+jitter should stay near 60s)", d)

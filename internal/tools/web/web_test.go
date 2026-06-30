@@ -108,7 +108,7 @@ func TestWeb_LimitsInputTo1MB(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		chunk := strings.Repeat("x", 1024)
-		for i := 0; i < 2048; i++ {
+		for range 2048 {
 			fmt.Fprint(w, chunk)
 		}
 	}))
@@ -136,7 +136,7 @@ func TestWeb_TruncatesTo50KB(t *testing.T) {
 		// Wrap each line in <p> so the tokenizer emits a newline
 		// between them (otherwise the "words" run together into
 		// one giant text node).
-		for i := 0; i < 5000; i++ {
+		for range 5000 {
 			fmt.Fprintln(w, "<p>", strings.Repeat("a", 40), "</p>")
 		}
 	}))

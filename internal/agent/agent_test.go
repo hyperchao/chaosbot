@@ -455,7 +455,7 @@ func TestAgent_Run_WindowingDoesNotBreakSessionOffset(t *testing.T) {
 		MaxSteps:         1,
 		MaxContextTokens: 10, // very small; forces aggressive dropping
 	}, fs)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := a.Run(context.Background(), "q"); err != nil {
 			t.Fatalf("Run %d: %v", i, err)
 		}
@@ -706,8 +706,7 @@ func TestSaveOnSuccess_PersistsCursorWithoutSummary(t *testing.T) {
 		t.Fatalf("after 1 turn: committedPrefix = %d, want 0", committedAfterOne)
 	}
 
-	// Run until committedPrefix > 0 (window has dropped at least one turn).
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		if _, err := a.Run(ctx, strings.Repeat("b", 500)); err != nil {
 			t.Fatalf("Run %d: %v", i+2, err)
 		}

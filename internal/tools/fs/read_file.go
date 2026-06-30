@@ -141,10 +141,8 @@ func sniffBinary(f *os.File) error {
 	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
 		return err
 	}
-	for _, b := range buf[:n] {
-		if b == 0 {
-			return fmt.Errorf("read_file: %s: appears to be binary; use shell + xxd for inspection", f.Name())
-		}
+	if bytes.Contains(buf[:n], []byte{0}) {
+		return fmt.Errorf("read_file: %s: appears to be binary; use shell + xxd for inspection", f.Name())
 	}
 	return nil
 }
