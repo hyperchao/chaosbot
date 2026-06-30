@@ -89,7 +89,7 @@ func (c *CLI) runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(c.Out, reply)
+	fmt.Fprintln(c.Out, stripThink(reply))
 	return nil
 }
 
@@ -217,7 +217,7 @@ func (c *CLI) replDispatch(line string) bool {
 		fmt.Fprintln(c.ErrOut, "error:", agent.HumanError(err))
 		return false
 	}
-	fmt.Fprintln(c.Out, reply)
+	fmt.Fprintln(c.Out, stripThink(reply))
 	return false
 }
 
@@ -263,4 +263,20 @@ func maskKey(s string) string {
 		return "***"
 	}
 	return s[:4] + "..." + s[len(s)-4:]
+}
+
+// stripThink removes reasoning content wrapped in <think>...</think>
+// tags from model output. Reasoning models (DeepSeek-R1, QwQ, etc.)
+// emit chain-of-thought in these tags; the user only needs the final
+// answer after the closing tag.
+func stripThink(s string) string {
+	start := strings.Index(s, "<think>")
+	if start == -1 {
+		return s
+	}
+	end := strings.Index(s, "</think>")
+	if end == -1 {
+		return s
+	}
+	return strings.TrimSpace(s[:start] + s[end+len("</think>"):])
 }

@@ -44,3 +44,21 @@ func TestReplComplete_EmptyInput(t *testing.T) {
 		t.Errorf("got %d completions, want 0", len(c))
 	}
 }
+
+func TestStripThink(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"<think>reasoning</think>answer", "answer"},
+		{"answer", "answer"},
+		{"<think>a</think>b<think>c</think>d", "b<think>c</think>d"},
+		{"<think>noclose", "<think>noclose"},
+		{"", ""},
+	}
+	for _, tt := range tests {
+		got := stripThink(tt.in)
+		if got != tt.want {
+			t.Errorf("stripThink(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
