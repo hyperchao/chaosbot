@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"math/rand"
 	"net/http"
 	"time"
@@ -79,17 +80,27 @@ func (p *Provider) Chat(ctx context.Context, req provider.Request) (*provider.Re
 	if err != nil {
 		return nil, fmt.Errorf("openai: build request: %w", err)
 	}
+	slog.Debug("Chat request",
+		"model", req.Model,
+		"messages", len(req.Messages),
+		"tools", len(req.Tools),
+		"temperature", req.Temperature,
+		"maxTokens", req.MaxTokens,
+		"hasSystem", req.System != "")
 	var lastErr error
 	for attempt := 0; attempt <= p.maxRetries; attempt++ {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
+		start := time.Now()
 		oaiResp, err := p.client.CreateChatCompletion(ctx, oaiReq)
 		if err == nil {
+			slog.Debug("Chat response", "latencyMs", time.Since(start).Milliseconds(), "contentLen", len(oaiResp.Choices[0].Message.Content))
 			return fromOpenAIResponse(&oaiResp)
 		}
 		classified := classifyOpenAIError(err)
 		lastErr = classified
+		slog.Debug("Chat attempt failed", "attempt", attempt, "err", classified, "latencyMs", time.Since(start).Milliseconds())
 		if !isRetryable(classified) {
 			return nil, classified
 		}

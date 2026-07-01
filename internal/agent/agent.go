@@ -296,6 +296,11 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 		return
 	}
 	if err := a.Store.Append(ctx, a.sessionID, history[a.sessionOffset:]); err != nil {
+		// Failure here means we have new messages in memory that
+		// did NOT make it to disk. Without this log, the user
+		// would silently lose them on next Resume (issue 001).
+		slog.Error("saveOnSuccess: Append failed; new messages in memory but not on disk",
+			"err", err, "sessionID", a.sessionID, "delta", len(history)-a.sessionOffset)
 		return
 	}
 	if a.summaryMsg != nil {
@@ -347,6 +352,7 @@ func (a *reActAgent) pruneHistory() {
 	a.committedPrefix = 0
 	a.sessionOffset = max(0, a.sessionOffset-n)
 	a.trimmedTotal += n
+	slog.Info("pruneHistory: released committed prefix", "dropped", n, "remaining", len(a.History))
 }
 
 // Reset implements Agent. It drops the in-memory
@@ -358,7 +364,10 @@ func (a *reActAgent) pruneHistory() {
 func (a *reActAgent) Reset() {
 	a.clearSessionState()
 	if a.Store != nil && a.sessionID != "" {
-		_ = a.Store.Delete(context.Background(), a.sessionID)
+		if err := a.Store.Delete(context.Background(), a.sessionID); err != nil {
+			slog.Warn("Reset: Store.Delete failed; on-disk session will linger",
+				"err", err, "sessionID", a.sessionID)
+		}
 	}
 	a.sessionID = ""
 	a.sessionOffset = 0
@@ -580,22 +589,31 @@ func (a *reActAgent) applyWindow(ctx context.Context, history []provider.Message
 	// Budget exceeded. Try LLM summarization first.
 	if !a.Cfg.SummaryDisabled {
 		if split := a.splitPoint(candidate); split > 0 {
+			slog.Info("applyWindow: budget exceeded, attempting summary",
+				"candidateTokens", a.estimateHistoryTokens(candidate), "budget", budget, "split", split)
 			summary, err := a.summarizeHistory(ctx, candidate[:split])
 			if err != nil {
 				return nil, 0, fmt.Errorf("agent: summarize: %w", err)
 			}
 			reduced := append([]provider.Message{summary}, candidate[split:]...)
-			if a.estimateHistoryTokens(reduced) <= budget {
+			reducedTokens := a.estimateHistoryTokens(reduced)
+			if reducedTokens <= budget {
+				slog.Info("applyWindow: summary accepted",
+					"summaryTokens", reducedTokens, "split", split)
 				a.summaryMsg = &summary
 				a.committedPrefix += split
 				return reduced, a.committedPrefix, nil
 			}
 			// Summary still too big — discard. Leave a.summaryMsg and
 			// a.committedPrefix untouched: nothing was actually committed.
+			slog.Warn("applyWindow: summary discarded (still over budget); falling back to drop",
+				"summaryTokens", reducedTokens, "budget", budget)
 		}
 	}
 
 	result := dropOldestTurns(candidate, budget, a.estimateHistoryTokens)
+	slog.Info("applyWindow: dropping oldest turns",
+		"dropped", len(candidate)-len(result), "remaining", len(result), "forceCompress", forceCompress)
 	return result, len(history) - len(result), nil
 }
 
