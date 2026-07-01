@@ -147,6 +147,14 @@ func classifyOpenAIError(err error) error {
 	// a parseable JSON {"error": {...}} body.
 	var apiErr *openaipkg.APIError
 	if errors.As(err, &apiErr) {
+		// OpenAI signals "prompt exceeds model window" with
+		// HTTP 400 + error.code = "context_length_exceeded".
+		// Route it to ErrContextLength so callers can branch
+		// on a specific sentinel; other 400s fall through to
+		// ErrBadRequest via classifyByStatus.
+		if code, ok := apiErr.Code.(string); ok && code == "context_length_exceeded" {
+			return fmt.Errorf("%w: %s", provider.ErrContextLength, apiErr.Error())
+		}
 		return classifyByStatus(apiErr.HTTPStatusCode, apiErr.Error())
 	}
 	// *RequestError is returned when the response body is
@@ -174,10 +182,9 @@ func classifyByStatus(status int, msg string) error {
 	case status >= 500 && status < 600:
 		return fmt.Errorf("%w: %s", provider.ErrServerError, msg)
 	case status == http.StatusBadRequest:
-		// Could also be ErrContextLength, but the SDK
-		// doesn't distinguish; 04-4b safety net handles
-		// 400s from context length separately by string
-		// match in the agent loop.
+		// 400s with code=context_length_exceeded are caught
+		// earlier in classifyOpenAIError and mapped to
+		// ErrContextLength. Other 400s land here.
 		return fmt.Errorf("%w: %s", provider.ErrBadRequest, msg)
 	default:
 		return fmt.Errorf("%w: status %d: %s", provider.ErrBadRequest, status, msg)

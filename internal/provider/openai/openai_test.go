@@ -69,6 +69,16 @@ func TestClassifyErrors(t *testing.T) {
 			want:   provider.ErrBadRequest,
 		},
 		{
+			// 400 with code=context_length_exceeded must be
+			// classified as ErrContextLength so the agent's
+			// reactive compression path can trigger; otherwise
+			// the user sees a "may be a bug" message.
+			name:   "400 context length exceeded",
+			status: http.StatusBadRequest,
+			body:   `{"error":{"message":"context length exceeded","type":"invalid_request_error","code":"context_length_exceeded"}}`,
+			want:   provider.ErrContextLength,
+		},
+		{
 			name:   "500 server error",
 			status: http.StatusInternalServerError,
 			body:   `{"error":{"message":"server down"}}`,
