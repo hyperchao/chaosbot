@@ -8,7 +8,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"log/slog"
 	"os"
 
 	"github.com/hyperchao/di"
@@ -25,6 +24,8 @@ var version = "dev"
 
 func main() {
 	configPath := flag.String("config", "", "path to config file (env-only when empty)")
+	logFile := flag.String("log-file", "", "write logs to this file in addition to stderr (empty = stderr only)")
+	logLevel := flag.String("log-level", "error", "log level: none|debug|info|warn|error (default error keeps stderr quiet under the REPL)")
 	flag.Parse()
 	args := flag.Args()
 
@@ -41,7 +42,10 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	if err := setupLogging(*logFile, *logLevel); err != nil {
+		fmt.Fprintln(os.Stderr, "chaosbot:", err)
+		os.Exit(1)
+	}
 
 	cliApp := di.GetDI[*cli.CLI](buildContainer(cfg))
 
