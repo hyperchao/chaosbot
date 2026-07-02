@@ -156,7 +156,7 @@ single `*http.Client` and respect the body caps in
   单元测试可在 08-1 阶段补(计划里 02-3 不分配测试子单元)。
 - `Config{APIKey, BaseURL, OrgID, Timeout, Name}` 一次性读,`Provider` 不可变。
 - **`Name` 字段**:上游厂商标签(`"deepseek"` / `"ollama"`),用于日志和
-  `chaosbot tools` 列表;空时回退 `"openai"`。**协议名始终是 OpenAI 协议**,
+  配置输出;空时回退 `"openai"`。**协议名始终是 OpenAI 协议**,
   与 Name 解耦(同一 SDK 可服务 OpenAI / DeepSeek / GLM / vLLM / Ollama)。
 - 二进制体积:1.5 MB → **2.2 MB**(增加 0.7 MB,SDK + 间接),远低于 25 MB 预算。
 - `go build` / `gofmt -l` / `go vet` / `make test` 全绿。

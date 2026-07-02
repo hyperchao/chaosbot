@@ -14,8 +14,11 @@ func TestLoad_Defaults(t *testing.T) {
 	t.Setenv("CHAOSBOT_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	cfg, err := config.Load("")
-	if err == nil {
-		t.Fatalf("Load: want error when no API key, got cfg=%+v", cfg)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Provider.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty", cfg.Provider.APIKey)
 	}
 }
 
@@ -136,13 +139,16 @@ provider:
 	}
 }
 
-func TestLoad_MissingAPIKey_ReturnsError(t *testing.T) {
+func TestLoad_MissingAPIKey_AllowsReadOnlyConfig(t *testing.T) {
 	t.Setenv("CHAOSBOT_API_KEY", "")
 	t.Setenv("OPENAI_API_KEY", "")
 	t.Setenv("DEEPSEEK_API_KEY", "")
-	_, err := config.Load("")
-	if err == nil {
-		t.Fatal("Load: want error when no API key source is set, got nil")
+	cfg, err := config.Load("")
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Provider.APIKey != "" {
+		t.Errorf("APIKey = %q, want empty", cfg.Provider.APIKey)
 	}
 }
 

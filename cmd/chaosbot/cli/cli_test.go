@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -64,6 +65,7 @@ func buildCLI(t *testing.T, fp agent.Agent, cfg *config.Config) (*cli.CLI, *byte
 	in := &bytes.Buffer{}
 	c := di.New()
 	di.RegisterDI(c, func() agent.Agent { return fp })
+	di.RegisterDI(c, func() *agent.Registry { return agent.NewRegistry() })
 	di.RegisterDI(c, func() *config.Config { return cfg })
 	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
@@ -176,7 +178,7 @@ func TestRun_OneShot_AgentError_Propagates(t *testing.T) {
 	}
 }
 
-func TestRun_SessionFlag_CallsResume(t *testing.T) {
+func TestRun_ResumeFlag_CallsResume(t *testing.T) {
 	wantErr := errors.New("session not found")
 	fa := &fakeAgent{
 		runFunc: func(_ context.Context, _ string) (string, error) {
@@ -185,7 +187,7 @@ func TestRun_SessionFlag_CallsResume(t *testing.T) {
 		resumeErr: wantErr,
 	}
 	c, _, _ := buildCLI(t, fa, &config.Config{})
-	err := c.Run([]string{"run", "--session", "sess-001", "hi"})
+	err := c.Run([]string{"run", "--resume", "sess-001", "hi"})
 	if !errors.Is(err, wantErr) {
 		t.Errorf("err = %v, want wraps %v", err, wantErr)
 	}
@@ -197,14 +199,14 @@ func TestRun_SessionFlag_CallsResume(t *testing.T) {
 	}
 }
 
-func TestRun_SessionFlag_Success_ProceedsToRun(t *testing.T) {
+func TestRun_ResumeFlag_Success_ProceedsToRun(t *testing.T) {
 	fa := &fakeAgent{
 		runFunc: func(_ context.Context, _ string) (string, error) {
 			return "resumed-reply", nil
 		},
 	}
 	c, out, _ := buildCLI(t, fa, &config.Config{})
-	if err := c.Run([]string{"run", "--session", "sess-002", "next"}); err != nil {
+	if err := c.Run([]string{"run", "--resume", "sess-002", "next"}); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
 	if fa.resumeID != "sess-002" {
@@ -212,6 +214,17 @@ func TestRun_SessionFlag_Success_ProceedsToRun(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "resumed-reply") {
 		t.Errorf("out = %q, want 'resumed-reply'", out.String())
+	}
+}
+
+func TestRun_SessionFlag_Errors(t *testing.T) {
+	c, _, _ := buildCLI(t, &fakeAgent{}, &config.Config{})
+	err := c.Run([]string{"run", "--session", "sess-001", "hi"})
+	if err == nil {
+		t.Fatal("want error for removed --session flag")
+	}
+	if !strings.Contains(err.Error(), "flag provided but not defined") {
+		t.Errorf("err = %v, want unknown flag error", err)
 	}
 }
 
@@ -224,6 +237,7 @@ func buildREPL(t *testing.T, fp agent.Agent, input string) (*cli.CLI, *bytes.Buf
 	in := bytes.NewBufferString(input)
 	c := di.New()
 	di.RegisterDI(c, func() agent.Agent { return fp })
+	di.RegisterDI(c, func() *agent.Registry { return agent.NewRegistry() })
 	di.RegisterDI(c, func() *config.Config { return &config.Config{} })
 	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
@@ -335,6 +349,47 @@ func TestREPL_SlashHelp(t *testing.T) {
 		}
 	}
 }
+
+func TestREPL_ToolsListsRegistryNames(t *testing.T) {
+	out := &bytes.Buffer{}
+	errOut := &bytes.Buffer{}
+	in := bytes.NewBufferString("/tools\n/exit\n")
+	r := agent.NewRegistry()
+	r.Register(fakeTool{name: "z_tool"})
+	r.Register(fakeTool{name: "a_tool"})
+	cn := di.New()
+	di.RegisterDI(cn, func() agent.Agent { return &fakeAgent{} })
+	di.RegisterDI(cn, func() *agent.Registry { return r })
+	di.RegisterDI(cn, func() *config.Config { return &config.Config{} })
+	di.RegisterAliasDI(cn, "in", func() io.Reader { return in })
+	di.RegisterAliasDI(cn, "out", func() io.Writer { return out })
+	di.RegisterAliasDI(cn, "errout", func() io.Writer { return errOut })
+	di.RegisterAliasDI(cn, "version", func() string { return "vtest" })
+	di.RegisterDI(cn, func() *cli.CLI { return &cli.CLI{} })
+
+	if err := di.GetDI[*cli.CLI](cn).Run([]string{}); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	s := out.String()
+	if !strings.Contains(s, "a_tool\n") || !strings.Contains(s, "z_tool\n") {
+		t.Errorf("out = %q, want registered tool names", s)
+	}
+	if strings.Index(s, "a_tool") > strings.Index(s, "z_tool") {
+		t.Errorf("out = %q, want sorted tool names", s)
+	}
+}
+
+type fakeTool struct {
+	name string
+}
+
+func (f fakeTool) Name() string { return f.name }
+
+func (f fakeTool) Description() string { return "fake" }
+
+func (f fakeTool) Parameters() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+
+func (f fakeTool) Invoke(context.Context, json.RawMessage) (string, error) { return "ok", nil }
 
 // TestREPL_EOF_Exits verifies that an empty input (no lines)
 // is treated as EOF and returns nil without invoking the

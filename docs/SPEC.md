@@ -8,7 +8,7 @@
 
 chaosbot is a **tool-using AI agent** packaged as a single Go binary CLI.
 It connects to a pluggable LLM provider, exposes a small set of built-in
-tools (file ops, shell, web fetch, time), runs a ReAct-style loop until
+tools (file ops, shell, web fetch), runs a ReAct-style loop until
 the model returns a final answer, and renders the result to the terminal.
 
 It is designed to run on a 1 vCPU / 512 MB server, ship as a ≤ 25 MB
@@ -46,8 +46,8 @@ static binary, and start in under 100 ms cold.
   reads git, calls LLM, prints answer, exits.
 - **U2 — REPL**: `chaosbot` → user types multi-turn questions, the
   session is persisted, `Ctrl-D` exits.
-- **U3 — Tools**: agent can read/write files, run shell, fetch URLs,
-  and ask the current time, all behind a workspace root.
+- **U3 — Tools**: agent can read/write files, run shell, and fetch URLs,
+  all behind a workspace root.
 - **U4 — Resume**: `chaosbot run --resume <id> "continue"` reloads a
   saved session and appends the new turn.
 
@@ -73,9 +73,8 @@ static binary, and start in under 100 ms cold.
           │            │
           ▼            │
    ┌──────────────┐    │
-   │ tools/{time, │
-   │  fs,shell,   │    │
-   │  web}        │    │
+   │ tools/{fs,   │
+   │  shell,web}  │    │
    └──────────────┘    │
                        │
    ┌──────────────┐    │
@@ -96,7 +95,6 @@ chaosbot                          # start REPL (default)
 chaosbot run "..."                # one-shot
 chaosbot run --resume <id> "..."  # resume a saved session
 chaosbot config                   # print effective config
-chaosbot tools                    # list registered tools
 chaosbot version                  # version info
 chaosbot --config <path> ...      # override config file
 chaosbot --workspace <path> ...   # override workspace root
@@ -121,7 +119,6 @@ A full example lives at `config.example.yaml` (added in Phase 07-1).
 
 | Tool | Args | Notes |
 |---|---|---|
-| `get_time` | (none) | RFC3339 UTC + local |
 | `read_file` | `path`, `start_line?`, `end_line?` | ≤ 2000 lines / 256 KB |
 | `write_file` | `path`, `content` | Atomic write via tmp+rename |
 | `edit_file` | `path`, `old_text`, `new_text` | `old_text` must be unique |

@@ -299,8 +299,8 @@ These live in `cli/cli_test.go` and test the REPL + session interaction:
 - 修复:窗口化只应用于传给 LLM 的视图,不修改原始累计 `history`
 - `history = append(a.History, ...)` 不修改 `a.History` 直到 `saveOnSuccess` 成功后
 
-**CLI 变更** (`cb47db7`):
-- `runCmd` 新增 `--session <id>` flag,调用 `agent.Resume` 恢复 session
+**CLI 变更** (`cb47db7`; 07-5 later renamed the flag to `--resume`):
+- `runCmd` 新增 resume flag,调用 `agent.Resume` 恢复 session
 - REPL 内部自动处理 auto-save,无需 CLI 知道 Store
 - `wire.go`:注册 `FileStore` via DI,缺失或初始化失败时降级 `NoopStore`
 - `fakeAgent` 更新匹配新接口(`Resume` + `SessionID`)

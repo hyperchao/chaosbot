@@ -81,7 +81,7 @@ var ErrToolNotFound = errors.New("agent: tool not found")
 - `Registry.Specs()` (sub-unit 03-2) builds `[]provider.ToolSpec` from
   the registered tools. **Order is unspecified** (map iteration);
   `Names()` returns a sorted copy for deterministic display in
-  `chaosbot tools` and REPL `/tools`.
+  REPL `/tools`.
 
 - `ErrToolNotFound` is a package-level sentinel returned by `Invoke`
   when the name isn't registered. Wrapped with `%w` and the name
@@ -194,7 +194,7 @@ build 目标改用 `$(BUILD_PKG)`,test/lint 仍走 `$(PKG) := ./...`。验证
     map 迭代顺序,**未指定**;调用方别依赖顺序。`out` 容量预分配 `len(r.tools)`,
     零分配热路径。
   - `Names() []string`:遍历 map 收集 name,`sort.Strings` 排序后返回(用于
-    `chaosbot tools` / REPL `/tools` 列表展示)。
+    REPL `/tools` 列表展示)。
 - **首次引入 `internal/provider` import**。Layering 校验:
   - `grep "internal/provider/openai" internal/agent/*.go` → 空(没有 concrete impl 依赖)
   - `grep "internal/provider" internal/agent/*.go` → 只有 `tool.go` 里的 `"chaosbot/internal/provider"`,

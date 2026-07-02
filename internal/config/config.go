@@ -6,7 +6,6 @@
 package config
 
 import (
-	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -44,9 +43,10 @@ type ProviderConfig struct {
 }
 
 // Load reads YAML from path (if non-empty), then overlays
-// environment variables, applies built-in defaults, resolves
-// the API key, and validates. Returns an error if the API key
-// cannot be located.
+// environment variables, applies built-in defaults, and resolves
+// the API key. An empty API key is allowed so read-only commands
+// such as version and config can run without credentials; commands
+// that call the provider fail at the provider boundary.
 func Load(path string) (*Config, error) {
 	cfg := defaults()
 	if path != "" {
@@ -57,9 +57,6 @@ func Load(path string) (*Config, error) {
 	applyEnv(cfg)
 	applyDefaults(cfg)
 	resolveAPIKey(cfg)
-	if err := validate(cfg); err != nil {
-		return nil, err
-	}
 	return cfg, nil
 }
 
@@ -161,13 +158,6 @@ func resolveAPIKey(cfg *Config) {
 	if cfg.Provider.APIKeyEnv != "" {
 		cfg.Provider.APIKey = os.Getenv(cfg.Provider.APIKeyEnv)
 	}
-}
-
-func validate(cfg *Config) error {
-	if cfg.Provider.APIKey == "" {
-		return errors.New("config: API key not set (use CHAOSBOT_API_KEY, provider.api_key, or provider.api_key_env)")
-	}
-	return nil
 }
 
 func defaults() *Config {

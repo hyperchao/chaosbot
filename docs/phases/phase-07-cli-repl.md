@@ -8,8 +8,8 @@
 | Field | Value |
 |---|---|
 | Phase | `07` |
-| Sub-units | `07-1` … `07-4` |
-| Status | `✅ complete` (4/4 sub-units done; see 实现笔记) |
+| Sub-units | `07-1` … `07-5` |
+| Status | `✅ complete` (all 5 sub-units done; see 实现笔记) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04 (Agent + Run), Phase 02 (provider.Config) |
 | Estimated total LOC | ~310 Go (80 + 100 + 30 + 100) |
@@ -50,8 +50,8 @@ chaosbot --workspace <path> ...     # override workspace root (Phase 05)
 chaosbot --provider openai          # override provider name
 ```
 
-`chaosbot tools` is deferred to Phase 05 (no tools yet → empty
-list would be a confusing first impression).
+Top-level `chaosbot tools` is intentionally not part of the MVP
+surface. Tool discovery lives in REPL `/tools`.
 
 ## Public API (target shape)
 
@@ -114,6 +114,23 @@ func main() {
   - cli / session / test 都不必关心 history slice 细节(append 谁、
     谁负责 copy、谁负责清空)
 
+- `07-5`  CLI / docs surface alignment(~120 Go LOC + docs)
+  - `chaosbot run --resume <id> <prompt>` is the supported resume flag.
+    The current `--session` spelling is removed to match `SPEC.md` and
+    README.
+  - `chaosbot version` and `chaosbot config` must not require an API key.
+    Config loading stays permissive at the CLI boundary: parse files/env,
+    apply defaults, and allow empty provider credentials; only commands
+    that call the provider (`run`, REPL) fail when no API key is configured.
+  - REPL `/tools` prints the registered tool names from the wired
+    `agent.Registry` instead of the current placeholder.
+  - No top-level `chaosbot tools` subcommand. The tool list is a REPL
+    affordance only; adding another top-level command is not worth the
+    surface area for MVP.
+  - `get_time` remains intentionally unimplemented. Phase 05 records the
+    rationale: `shell` + `date` is equivalent and keeps the default tool
+    set smaller.
+
 ## Test points
 
 | Test | Sub-unit | Type |
@@ -121,7 +138,7 @@ func main() {
 | `TestLoad_Defaults` | 07-1 | unit |
 | `TestLoad_FromYAML` | 07-1 | unit |
 | `TestLoad_EnvOverridesYAML` | 07-1 | unit |
-| `TestLoad_MissingAPIKey_ReturnsError` | 07-1 | unit |
+| `TestLoad_MissingAPIKey_AllowsReadOnlyConfig` | 07-5 | unit |
 | `TestRun_OneShot` (subcommand dispatcher) | 07-2 | unit (fakeProvider, capture args) |
 | `TestRun_DefaultsToREPL` (no args) | 07-2 | unit |
 | `TestRun_MultiTurn_AccumulatesHistory` | 07-4 | unit (fakeProvider, capture msgs) |
@@ -132,10 +149,57 @@ func main() {
 | `TestREPL_SlashReset` | 07-4 | unit |
 | `TestREPL_SlashHelp` | 07-4 | unit |
 | `TestREPL_EOF_Exits` | 07-4 | unit (empty input) |
+| `TestRun_ResumeFlag_ResumesSession` | 07-5 | unit |
+| `TestRun_SessionFlag_Errors` | 07-5 | unit |
+| `TestVersion_NoAPIKey_Succeeds` | 07-5 | unit / package main |
+| `TestConfig_NoAPIKey_Succeeds` | 07-5 | unit / package main |
+| `TestREPL_ToolsListsRegistryNames` | 07-5 | unit |
 
 The `cmd/chaosbot/main.go` itself is left untested at the package
 level (it's a 5-line composition root). Subcommand logic lives
 in the `cmd/chaosbot/cli` subpackage, which is unit-testable.
+
+## 07-5 Public API / interface
+
+```text
+chaosbot run --resume <id> <prompt>
+chaosbot version                 # succeeds without API key
+chaosbot config                  # succeeds without API key; key prints as ***
+```
+
+`cli.CLI` gains access to the registry so `/tools` can render the real
+tool list:
+
+```go
+type CLI struct {
+    Agent    agent.Agent
+    Registry *agent.Registry
+    Config   *config.Config
+    // existing injected I/O and version fields...
+}
+```
+
+No new provider, agent, session, or tool data structures are added.
+`config.Config` keeps the same shape; the only config change is validation
+policy at the CLI entry point.
+
+## 07-5 Risks
+
+- **Permissive config can defer credential errors.** `version` and
+  `config` should work without a key, but `run` and REPL must still fail
+  with a clear provider-setup error before an LLM call.
+- **Removing `--session` can break local muscle memory.** The project has
+  not committed to a stable CLI yet; aligning with `--resume` is preferable
+  before broader use.
+- **`/tools` exposes wiring drift.** The command must read from the actual
+  `Registry`, not a hard-coded list, so tests catch missing registrations.
+- **Docs drift.** `SPEC.md` and README must remove the top-level `tools`
+  command and remove `get_time` from the default tool set.
+
+## 07-5 Performance impact
+
+No new dependencies. Runtime cost is one registry name sort when `/tools`
+is invoked. Binary size and steady-state RSS are unchanged.
 
 ## Risks
 
@@ -193,19 +257,19 @@ defaults()  →  loadYAML(path)  →  applyEnv()  →  applyDefaults()  →  res
 1. `CHAOSBOT_API_KEY` env(最具体,覆盖一切)
 2. YAML `provider.api_key`(直接给)
 3. YAML `provider.api_key_env` 引用的 env var(默认 `OPENAI_API_KEY`)
-4. 三者全空 → `Load` 返回 error
+4. 三者全空 → `Load` 保留空 key;需要 provider 的命令在 provider 边界报错(07-5)
 
 **env 覆盖 YAML 的字段**:`CHAOSBOT_PROVIDER` / `CHAOSBOT_API_KEY` /
 `CHAOSBOT_BASE_URL` / `CHAOSBOT_MODEL` / `CHAOSBOT_SYSTEM` / `CHAOSBOT_MAX_STEPS` /
 `CHAOSBOT_WORKSPACE`。`MAX_STEPS` 用 `strconv.Atoi` 解析,解析失败静默忽略(保持 default)。
 
 **测试覆盖**(8 个,全 PASS):
-- `TestLoad_Defaults` — 无 YAML 无 env,期望 error(无 API key)
+- `TestLoad_Defaults` — 无 YAML 无 env,走默认值且保留空 API key(07-5 调整)
 - `TestLoad_FromEnv_APIKey` — `CHAOSBOT_API_KEY` 路径,验证其他字段走默认
 - `TestLoad_FromYAML` — YAML 设全套 + `api_key_env` 解析
 - `TestLoad_EnvOverridesYAML` — YAML 跟 env 同时设,env 赢
 - `TestLoad_APIKeyEnvFallsBackToProviderEnv` — `api_key_env: CUSTOM_KEY` 路径
-- `TestLoad_MissingAPIKey_ReturnsError` — 全空,error
+- `TestLoad_MissingAPIKey_AllowsReadOnlyConfig` — 全空,允许 read-only config
 - `TestLoad_MalformedYAML` — `:::not yaml`,YAML parser 报错透传
 - `TestLoad_YAMLFileNotFound` — 路径不存在,`os.ReadFile` 报错透传
 
@@ -245,11 +309,11 @@ defaults()  →  loadYAML(path)  →  applyEnv()  →  applyDefaults()  →  res
 - 最后成型:**`internal/agent` 完全 DI 友好**;**`internal/agent/fake` 提供 Provider
   fake**;**`cmd/chaosbot/cli` 拿 `agent.Agent` 接口(测试用 fakeAgent)**;**`main.go` 装配**
 
-**`needsConfig` 设计**:
-- `config.Load` 严格(要 API key)
-- 但 `chaosbot version` / no-args 不该强制要 API key
-- `main.go` 拿 `needsConfig(args)` 判断:仅 `run` / `config` 子命令失败时报 config 错
-- 这让 `chaosbot version` 可以独立 smoke 测,不依赖任何 secret
+**API key 设计(07-5 后)**:
+- `config.Load` 允许空 API key,保证 `chaosbot version` / `chaosbot config`
+  可以独立运行
+- 需要 provider 的路径(`run` / REPL)在 wiring 里得到 `emptyProvider`,
+  并在调用时返回清晰错误
 
 **`openai.New` 闭包**:
 ```go
@@ -281,7 +345,7 @@ chaosbot: no subcommand (REPL coming in 07-4; use 'chaosbot run "<prompt>"')
 $ ./bin/chaosbot foobar
 chaosbot: unknown subcommand: foobar (try 'run', 'config', 'version')
 $ ./bin/chaosbot run "hi"         # 缺 API key
-chaosbot: config: config: API key not set (use CHAOSBOT_API_KEY, ...)
+chaosbot: agent: chat: no provider configured (set CHAOSBOT_API_KEY or pass --config)
 $ CHAOSBOT_API_KEY=sk-fake-test1234 ./bin/chaosbot config
 provider:    openai
 model:       (empty)
@@ -367,4 +431,3 @@ REPL 空闲 RSS +5 MB(stdin scanner buffer + agent.history slice);
   `strings`;**不** import concrete provider,**不** import `provider`
   package(只通过 agent 的方法间接触碰 history)
 - `os.Stdin` 注入 via DI alias,test 时换 `bytes.Buffer`
-

@@ -22,7 +22,7 @@ import (
 type Tool interface {
 	// Name returns the model-visible identifier of the tool. Must
 	// be unique within a Registry. Convention: snake_case verb_noun
-	// (e.g. "read_file", "get_time").
+	// (e.g. "read_file", "web_fetch").
 	Name() string
 
 	// Description returns a short docstring the LLM sees. Should

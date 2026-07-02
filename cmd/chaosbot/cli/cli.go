@@ -34,12 +34,13 @@ import (
 // is owned by the agent (Phase 06). CLI just calls agent.Run
 // / agent.Reset / agent.Resume; the agent handles save/load.
 type CLI struct {
-	Agent   agent.Agent    `di:"type"`
-	Config  *config.Config `di:"type"`
-	In      io.Reader      `di:"alias:in"`
-	Out     io.Writer      `di:"alias:out"`
-	ErrOut  io.Writer      `di:"alias:errout"`
-	Version string         `di:"alias:version"`
+	Agent    agent.Agent     `di:"type"`
+	Registry *agent.Registry `di:"type"`
+	Config   *config.Config  `di:"type"`
+	In       io.Reader       `di:"alias:in"`
+	Out      io.Writer       `di:"alias:out"`
+	ErrOut   io.Writer       `di:"alias:errout"`
+	Version  string          `di:"alias:version"`
 }
 
 // Run dispatches to the named subcommand. Returns the error
@@ -63,12 +64,12 @@ func (c *CLI) Run(args []string) error {
 
 // runCmd handles `chaosbot run [flags] <prompt>`. Flags:
 //
-//	--session <id>  resume a saved session by id
+//	--resume <id>  resume a saved session by id
 func (c *CLI) runCmd(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
 	fs.SetOutput(c.ErrOut)
 	var sessionID string
-	fs.StringVar(&sessionID, "session", "", "resume a saved session by id")
+	fs.StringVar(&sessionID, "resume", "", "resume a saved session by id")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -209,7 +210,13 @@ func (c *CLI) replDispatch(line string) bool {
 		fmt.Fprintln(c.Out, "  /tools    list registered tools")
 		return false
 	case "/tools":
-		fmt.Fprintln(c.Out, "(tool listing not yet available)")
+		if c.Registry == nil {
+			fmt.Fprintln(c.Out, "(no tools registered)")
+			return false
+		}
+		for _, name := range c.Registry.Names() {
+			fmt.Fprintln(c.Out, name)
+		}
 		return false
 	}
 	reply, err := c.Agent.Run(context.Background(), line)

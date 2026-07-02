@@ -63,7 +63,7 @@ See `config.example.yaml` for all options.
 |---|---|
 | `chaosbot` | Start interactive REPL |
 | `chaosbot run <prompt>` | One-shot query |
-| `chaosbot run --session <id> <prompt>` | Resume a saved session |
+| `chaosbot run --resume <id> <prompt>` | Resume a saved session |
 | `chaosbot config` | Print effective config |
 | `chaosbot version` | Version info |
 
