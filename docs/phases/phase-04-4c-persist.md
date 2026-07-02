@@ -8,7 +8,7 @@
 | Field | Value |
 |---|---|
 | Phase | `04-4c-persist` |
-| Status | `⬜ not started` |
+| Status | `✅ complete` (landed in commit `8203f97` together with ErrContextLength handling; see 实现笔记; progress.md row added retroactively) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 04-4c (summarization), Phase 06 (session.Store + FileStore) |
 | Estimated total LOC | ~80 Go + ~120 test |
@@ -288,3 +288,28 @@ With `SummaryEnabled = false`:
 - Concurrent writes from multiple processes (single-user MVP)
 - A session format migration for old `<id>.jsonl` files that
   pre-date the sidecar — they're valid sessions without summaries.
+
+---
+
+### 实现笔记 — Summary persistence landed in `8203f97`
+
+**Commit**: `8203f97 agent: compress on ErrContextLength without step error-return hack`
+
+虽然 commit message 主要讲 reactive ErrContextLength 重构，**Summary persistence 的核心实现也在同一次提交里落地**：
+- `session.Store` 接口加 `SaveSummary` / `LoadSummary`
+- `FileStore.summaryPath` + atomic tmp+rename 写 `<id>.summary.json`
+- `SummaryInfo` 结构（含 `Content` / `Cursor` / `Tokens`）
+- `reActAgent.Resume` 调用 `LoadSummary` 恢复 `summaryMsg`
+- `reActAgent.saveOnSuccess` 在有 `summaryMsg` 或 `committedPrefix>0` 时持久化
+- `reActAgent.Reset` 通过 `Store.Delete` 一并删 sidecar
+
+**后续 commit 增量改进**：
+- `c3278ab fix(agent): always persist cursor in SummaryInfo even when summarization is disabled` — 即使 summaryEnabled=false 也要存 cursor-only sidecar,让 Resume 时 `committedPrefix` 能恢复
+- `c172e28 test(08-1): boundary and error-path coverage` — 加 SaveSummary roundtrip / not exist / overwrite / read-only dir 失败 / Delete 同步清 sidecar 5 个测
+- `6472e94 fix(agent): commitTrim remove min cap` — 修 commitTrim bug
+- `3f9ccb2` (`10-1`) — Store.LoadFrom;Resume 走 LoadFrom
+- `350e5bd` (`10-2`) — `trimmedTotal` 引入,cursor 改为绝对偏移,saveOnSuccess 写 `trimmedTotal+committedPrefix`;Resume stale cursor fallback
+
+**Phase 10 改进**:stored SummaryInfo.Cursor 在 Phase 10 之前是**相对**已 trim 历史的偏移,有 bug;改成绝对磁盘偏移后,旧 session resume 时 LoadFrom 可能命中 `ErrStaleCursor`,fallback 到全 Load + 丢 summary(单次代价,不影响后续)。
+
+**Spec doc 状态债务**:spec doc (`phase-04-4c-persist.md`) 是 commit `8203f97` 同批次写的,但 Status 字段停留在 `⬜ not started` 没填;progress.md 也只在 `04-4b/c` 一行里隐式覆盖。本次 retroactive 修正:Status → ✅,新增独立 progress.md 行。

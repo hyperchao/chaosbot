@@ -2,7 +2,7 @@
 
 未解决的、尚未决定方案的设计问题。先记录，后续 phase 解决。
 
-## 001 — Session save 失败导致重复 message
+## 002 — REPL readline 缺历史/编辑/Tab 补全
 
 **Status**: open
 **Found**: 06-3 implementation (2026-06-16)

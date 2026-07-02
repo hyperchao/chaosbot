@@ -35,6 +35,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 04-3  | Agent struct + 终止条件 + 集成测 | ✅ | 06-03 | 06-03 | ~80 | 4/4 | `Run` + `MaxSteps` + `ErrMaxSteps`;fake 扩 Script/AllReqs 队列;测合并到 4 个 |
 | 04-4  | context window 滑动窗口 + token 估算 | ✅ | 06-16 | 06-16 | ~260 | 8/8 | `applyWindow`/`dropOldestTurns`;`contextBudget` 防御性 clamp;`estimateHistoryTokens` zero-alloc unsafe;`EstimateTokensDefault` zero-alloc CJK;Config +2 字段;ADR-0002 更新 |
 | 04-4b/c | safety net + LLM summarization | ✅ | 06-21 | 06-21 | ~160 | 10/11 | `SummaryEnabled` cfg;`summaryMsg`/`summaryCursor`;`serializeHistoryFragment`;`summarizeHistory`;proactive applyWindow;reactive ErrContextLength retry;Reset/Resume clear summary |
+| 04-4c-persist | Summary persistence (sidecar `<id>.summary.json`) | ✅ | 06-25 | 06-25 | ~80 | +5 | `Store.SaveSummary`/`LoadSummary` + `FileStore.summaryPath`(atomic tmp+rename)+ `SummaryInfo{Content,Cursor,Tokens}`;`Agent.Resume` restore `summaryMsg`;`saveOnSuccess` 写 sidecar(with/without summary);`Reset` 经 `Delete` 一并清;Phase 10 改进 cursor 语义为绝对偏移;commits `8203f97` `c3278ab` `c172e28` |
 | 05-1  | tools/fs.read_file | ✅ | 06-14 | 06-14 | ~340 | 6/6 | `internal/tools/fs/read_file.go` 158 + test 180;`bufio.Scanner` token 1 MiB;`cat -n` 输出;`*os.PathError` 透传;binary sniff 512 B;见 phase-05 实现笔记 05-1 |
 | 05-2  | tools/fs.write_file | ✅ | 06-15 | 06-15 | ~290 | 9/9 | `writeFileAtomic` tmp+fsync+rename 原子写;父目录 `MkdirAll`;tmp 0600;`%w` wrap `*os.PathError` 透传;failure path 留原文件不动 |
 | 05-3  | tools/fs.edit_file | ✅ | 06-15 | 06-15 | ~300 | 8/8 | strict unique-anchor(0 或 N>1 都返错,error 带前 5 个 offsets);`writeFileAtomic` 复用;empty `old_text` 拒绝(防 infinite match);empty `new_text` 删 anchor |
@@ -53,6 +54,12 @@ must update the table below when it starts, finishes, or changes scope.
 | 08-3  | REPL readline（历史 + 行编辑 + Tab 补全） | ✅ | 06-30 | 06-30 | ~110 | 5/5 | `github.com/chzyer/readline` 替代 bufio.Scanner;终端检测自动退回到 scanner;自定义 replCompleter;见 phase-08-3 实现笔记 |
 | 10-1  | session.Store.LoadFrom + ErrStaleCursor | ✅ | 06-30 | 06-30 | ~50 | 6/6 | `LoadFrom(ctx,id,offset)` 流式跳行;`ErrStaleCursor` 当 offset > 行数;FileStore + NoopStore 实现;6 测:offset0/mid/atEnd/beyondEnd/notExist/negative/largeLineAtOffset;commit `3f9ccb2` |
 | 10-2  | pruneHistory cursor 累积化 + Resume 懒加载 | ✅ | 06-30 | 06-30 | ~70 | 5/5 | 新字段 `trimmedTotal`(累计已剪绝对偏移);Resume 走 `LoadFrom`,`ErrStaleCursor` 触发 fallback Load;`SaveSummary.Cursor = trimmedTotal+committedPrefix`(始终绝对);`pruneHistory` 累加 `trimmedTotal`;`applyWindow` summaryMsg 触发条件简化为 `summaryMsg != nil`(基于赋值顺序不变量);拆出 `loadHistory` + `clearSessionState` helpers;commit `350e5bd` |
+| 09-1  | Provider error sentinels + 分类 | ✅ | 07-01 | 07-02 | ~150 | n/a | 5 sentinel(`ErrRateLimited`/`ErrAuthFailed`/`ErrServerError`/`ErrBadRequest`/`ErrNetwork`) + openai `classifyByStatus`(429/401/403/400/5xx→对应 sentinel)+ `classifyOpenAIError`(*APIError/*RequestError/其他)+ `ErrContextLength` via `code=="context_length_exceeded"`(`154afe7` 补);commits `fce21fd` `7d36201` `9fd5712` `154afe7` |
+| 09-2  | Retry with exponential backoff | ✅ | 07-01 | 07-01 | ~80 | n/a | `provider.Config.MaxRetries` / `RetryBaseDelay`(默认 3 / 1s);openai Chat `for attempt := 0; attempt <= p.maxRetries` 循环 + `isRetryable`(只重试 ErrRateLimited/ErrServerError/ErrNetwork)+ `backoffWithJitter`(base*2^attempt + uniform [0,base),cap 60s)+ ctx cancel respect;commits `7d36201` `9fd5712` |
+| 09-3  | HumanError + REPL non-fatal | ✅ | 07-01 | 07-01 | ~40 | n/a | `agent.HumanError(err)` 把 6 个 sentinel 翻译为 action 消息("check CHAOSBOT_API_KEY" / "/reset" 等);agent.go `errors.Is(stepErr, ErrContextLength)` 触发 forceCompress;commits `ebec145` `9fd5712` |
+| 11-1  | CLI logging flags — --log-file / --log-level | ✅ | 07-01 | 07-01 | ~85 | n/a | 新文件 `cmd/chaosbot/logging.go`(79)+ `logging_test.go`(135);level-aware handler;flags 注入 `main.go`;仅 status 输出 + JSON/Text handler 选择;commit `51cdaaf` |
+| 11-2  | agent/provider Chat 错误与 envelope 日志 | ✅ | 07-01 | 07-01 | ~25 | 0/0 | 之前被 swallow 的 error 现在 `slog.Debug`;agent.Chat 入口/出口 + provider.Chat 加 req envelope 日志(model、msg/tool count、temperature 等);provider.Chat 加 latency + content length;commit `e326707` |
+| 11-3  | Issue 001 — line_id dedup + single fsync/Append | ✅ | 07-02 | 07-02 | ~80 | +11 | `Store.Append` 加 `offset int` 参数;FileStore JSON 行 `{"l":N,"role":...,...}` + 单次 fsync;`loadFromOffset` 按 `LineID<offset` 跳过 + duplicate 后写覆盖(去重);agent.saveOnSuccess 传 `trimmedTotal+sessionOffset`(Phase 10 基础设施);Issue 001 → ✅ resolved;commit `47d5e27` |
 
 ## 200-LOC 守门(每轮 review 预算)
 
@@ -70,10 +77,10 @@ git diff --stat <prev-tag-or-commit>..HEAD -- ':!docs' ':!*.md' ':!*.yaml' ':!*.
 
 (此处记录超出 200 行的子阶段)
 
-## 已知问题（deferred）
+## 问题追踪
 
-未解决的设计问题，详情见 `docs/issues/`：
+完整跟踪在 `docs/issues/`：
 
-- [001](issues/001-session-save-duplicates.md) — Session save 失败导致偶发重复 message
-  (Append 部分写入 + in-memory offset 未更新 → 下次 retry 重复)。MVP 接受。
+- [001](issues/001-session-save-duplicates.md) — ✅ resolved: line_id per message + single fsync/Append (`47d5e27`) + Phase 10 `trimmedTotal` 让 saveOnSuccess 传入正确 offset,使 `loadFromOffset` 能 dedup
 - [002](issues/002-repl-readline.md) — ✅ resolved: REPL readline (Phase 08-3, `peterh/liner`)
+- [003](issues/003-slog-unconfigured.md) — ✅ resolved: `main.go` 配 `slog.SetDefault(NewTextHandler(os.Stderr, LevelWarn))`(commit `0fb665e`)

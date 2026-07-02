@@ -10,7 +10,7 @@
 |---|---|
 | Phase | `09` |
 | Sub-units | `09-1` … `09-3` |
-| Status | `⬜ not started` |
+| Status | `✅ complete` (all 3 sub-units landed; see 实现笔记 — 09-1 via `fce21fd`+`7d36201`+`154afe7`; 09-2 via `7d36201`; 09-3 via `ebec145`; progress.md updated retroactively) |
 | Owner | chaosbot authors |
 | Pre-requisites | Phase 02 (Provider), Phase 04 (Agent loop), Phase 07 (REPL) |
 | Estimated total LOC | ~150 Go + ~80 test |
@@ -207,3 +207,75 @@ Files: `internal/agent/agent.go`, `cmd/chaosbot/cli/cli.go`
 - Adaptive retry based on Retry-After header (just sleep fixed)
 - Per-tool retry (tools don't have transient errors usually)
 - Retry metrics / observability
+
+---
+
+### 实现笔记 09-1 — Provider error sentinels + 分类
+
+**Files**: `internal/provider/provider.go` (sentinels), `internal/provider/openai/openai.go` (classification)
+**Commits**: `fce21fd` (ErrContextLength), `7d36201` (5 sentinels + classify + retry loop, split later), `9fd5712` (review fixes), `154afe7` (context_length_exceeded → ErrContextLength)
+
+**Sentinels** in `internal/provider/provider.go`:
+- `ErrContextLength` (precursor from `fce21fd`, used by summarization reactive path)
+- `ErrRateLimited`, `ErrAuthFailed`, `ErrServerError`, `ErrBadRequest`, `ErrNetwork`
+
+**Classification path** in openai package:
+- `classifyOpenAIError(err)` dispatches on type:
+  - `*openaipkg.APIError` → check `apiErr.Code == "context_length_exceeded"` first (route to `ErrContextLength`), else `classifyByStatus(apiErr.HTTPStatusCode)`
+  - `*openaipkg.RequestError` → `classifyByStatus(reqErr.HTTPStatusCode)` (HTML/error bodies)
+  - other → `ErrNetwork`
+- `classifyByStatus(status, msg)`:
+  - 429 → `ErrRateLimited`
+  - 401 / 403 → `ErrAuthFailed`
+  - 5xx → `ErrServerError`
+  - 400 → `ErrBadRequest` (the `context_length_exceeded` branch was lifted to `classifyOpenAIError` by `154afe7` so it can inspect `apiErr.Code`, which `RequestError` lacks)
+  - other → `ErrBadRequest` with status echo
+
+### 实现笔记 09-2 — Retry with exponential backoff
+
+**Files**: `internal/provider/openai/openai.go`, `internal/config/config.go`, `internal/provider/provider.go`
+**Commits**: `7d36201` (initial), `9fd5712` (review fixes: defaults via helper funcs, jitter, ctx-aware delay)
+
+**Config** in `provider.Config`:
+- `MaxRetries int` (default 3 via `retryOrDefault`)
+- `RetryBaseDelay time.Duration` (default 1s via `retryBaseOrDefault`)
+
+**Retry loop** in `openai.Provider.Chat`:
+- `for attempt := 0; attempt <= p.maxRetries; attempt++`
+- Non-retryable (`isRetryable(err)` false: `ErrAuthFailed`, `ErrBadRequest`, `ErrContextLength`) → return immediately, no retry
+- Retryable (`ErrRateLimited`, `ErrServerError`, `ErrNetwork`) → backoff + jitter, respect ctx cancel
+- After final attempt → return last classified error
+- `backoffWithJitter(attempt, base)` = `base << attempt + uniform random [0, base)`, cap at 60s
+- Per-attempt `slog.Debug` log added later by commit `e326707`
+
+### 实现笔记 09-3 — HumanError + REPL non-fatal
+
+**Files**: `internal/agent/human_error.go` (new), `internal/agent/agent.go` (forces compress on ErrContextLength)
+**Commits**: `ebec145`, `9fd5712`
+
+**`agent.HumanError(err) string`** maps each sentinel to actionable user-facing copy:
+- `ErrContextLength` → `"context too long; type /reset to start a new session"`
+- `ErrRateLimited` → `"rate limited; please wait a moment and try again"`
+- `ErrAuthFailed` → `"authentication failed; check CHAOSBOT_API_KEY or provider.api_key"`
+- `ErrServerError` → `"provider server error; please try again later"`
+- `ErrBadRequest` → `"bad request (this may be a bug; please report): <err.Error()>"`
+- `ErrNetwork` → `"network error: <err.Error()>"`
+- default → pass through `err.Error()`
+
+**agent.go**: `step` already detects `errors.Is(stepErr, provider.ErrContextLength)` and passes `forceCompress=true` on the next step (reactive summarization). The `ErrContextLength` sentinel itself was added in `fce21fd`; this phase just gives the user a "type /reset" hint via `HumanError`.
+
+**REPL non-fatal**: the actual loop continues after `agent.Run` returns the error; nothing in this phase changed the loop because it was already non-fatal (errors print + next prompt). The improvement is the message itself going through `HumanError`.
+
+### 偏差 from spec
+
+- 4 vs 5 sentinels: spec listed `ErrContextLength` implicitly via the "context-length error" goal but the 5 explicit sentinels table omits it; implementation actually has 6 sentinels (`ErrContextLength` + the 5 from spec).
+- `backoffWithJitter` overflow protection: `base << attempt` overflows `time.Duration` if `attempt` is large; mitigated by clamping `exp > 60s` to 60s.
+- `isRetryable` does not include `ErrContextLength` (spec says non-retryable) — confirmed; reactive path is via `forceCompress`, not retry.
+
+### Follow-ups (deferred)
+
+- No `slog.Info` when retry kicks in (only Debug); users with default log level won't see "retrying in Ns".
+- `HumanError("network error: ...")` includes raw err text which may leak internals on some errors.
+- No metric for retry attempt count; debugging requires log inspection.
+
+**progress.md retroactive update**: this phase was implemented but progress.md was never updated until now. The four 2026-07-01 commits (`51cdaaf`/`e326707`/`154afe7`) and 2026-07-02 (`47d5e27`) landed without spec frontmatter flips; Phase 09 sub-units landed in commits `fce21fd`/`7d36201`/`ebec145`/`9fd5712` earlier in the 06-xx window without progress.md rows.
