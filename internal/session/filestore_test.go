@@ -440,6 +440,107 @@ func TestList_WorksWithoutSummary(t *testing.T) {
 	}
 }
 
+// TestFileStore_PartialFirstMessage_RetryRecovers simulates the
+// real failure mode: Append fails mid-flush, leaving a partial
+// JSON line at the end of the file. The next Append retries with
+// the same line_ids. With the leading-newline format
+// ("\n{json}" per line) the partial is separated from the
+// retry's first line by a "\n", so the retry's first message
+// is recovered as its own line and dedup fills the rest.
+//
+// Without the leading-newline format the retry's first message
+// would glue to the partial, fail JSON parse, and be silently
+// dropped — leaving a zero-value at idx 0 in the deduped slice.
+func TestFileStore_PartialFirstMessage_RetryRecovers(t *testing.T) {
+	fs, dir := newStore(t)
+	ctx := context.Background()
+	id := "partial-first"
+
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "m1"),
+		mustMessage(t, provider.RoleAssistant, "m2"),
+		mustMessage(t, provider.RoleUser, "m3"),
+	}
+
+	// Simulate a partial write of the FIRST message of a fresh
+	// file: file contains the start of m1's JSON, no trailing
+	// newline. The leading-"\n" Append would normally put "\n"
+	// before the content; the absence of that "\n" is exactly
+	// what a mid-flush failure leaves on disk.
+	path := filepath.Join(dir, id+".jsonl")
+	partial := []byte(`{"l":0,"role":"user","content":"m1`)
+	if err := os.WriteFile(path, partial, 0600); err != nil {
+		t.Fatalf("WriteFile partial: %v", err)
+	}
+
+	// Retry: Append all 3 messages with the same offset.
+	if err := fs.Append(ctx, id, 0, msgs); err != nil {
+		t.Fatalf("Append retry: %v", err)
+	}
+
+	// All 3 messages must be recoverable. The partial m1 is
+	// skipped on read; retry's m1 lands at idx 0, m2 at 1, m3
+	// at 2. Without the leading-"\n" fix, retry's m1 would be
+	// glued to the partial and dropped → len(got) == 2.
+	got, err := fs.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != len(msgs) {
+		t.Fatalf("len = %d, want %d (retry's first message lost to partial-glue)", len(got), len(msgs))
+	}
+	for i, want := range []string{"m1", "m2", "m3"} {
+		if got[i].Content != want {
+			t.Errorf("got[%d] = %q, want %q", i, got[i].Content, want)
+		}
+	}
+}
+
+// TestFileStore_PartialMidBatch_RetryDedups covers the case
+// where Append writes some messages cleanly, then fails mid-flush
+// on a later message, then retries. The dedup-by-line_id path
+// must produce the same final state as a single successful
+// Append of the full batch.
+func TestFileStore_PartialMidBatch_RetryDedups(t *testing.T) {
+	fs, dir := newStore(t)
+	ctx := context.Background()
+	id := "partial-mid"
+
+	msgs := []provider.Message{
+		mustMessage(t, provider.RoleUser, "m1"),
+		mustMessage(t, provider.RoleAssistant, "m2"),
+		mustMessage(t, provider.RoleUser, "m3"),
+	}
+
+	// Manually craft the "first attempt left some complete lines
+	// plus a partial" state. After a hypothetical successful
+	// Append(msgs) the file would be "\n{m1}\n{m2}\n{m3}\n".
+	// A failure at m3 leaves "\n{m1}\n{m2}\n{partial-m3".
+	attempt1 := "\n{\"l\":0,\"role\":\"user\",\"content\":\"m1\"}\n{\"l\":1,\"role\":\"assistant\",\"content\":\"m2\"}\n{\"l\":2,\"role\":\"user\",\"content\":\"m3"
+	path := filepath.Join(dir, id+".jsonl")
+	if err := os.WriteFile(path, []byte(attempt1), 0600); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	// Retry the full batch.
+	if err := fs.Append(ctx, id, 0, msgs); err != nil {
+		t.Fatalf("Append retry: %v", err)
+	}
+
+	got, err := fs.Load(ctx, id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	for i, want := range []string{"m1", "m2", "m3"} {
+		if got[i].Content != want {
+			t.Errorf("got[%d] = %q, want %q", i, got[i].Content, want)
+		}
+	}
+}
+
 // TestLoadFrom_OffsetZero verifies offset 0 returns the full
 // history (equivalent to Load).
 func TestLoadFrom_OffsetZero(t *testing.T) {

@@ -54,6 +54,14 @@ func (fs *FileStore) summaryPath(id string) string {
 // Single fsync after all writes. On error, the caller does NOT
 // advance its cursor — the next retry assigns the same line_ids
 // to the same messages and dedup-on-read handles the overlap.
+//
+// On-disk layout: each line is written as "\n{json}" (newline
+// before the content, not after). The leading newline of every
+// line doubles as a partial-write separator: if a flush fails
+// mid-message the partial bytes are followed by the next
+// attempt's leading "\n", so the retry's first message is read
+// as its own line instead of being glued to the partial. Empty
+// leading lines are skipped by loadFromOffset.
 func (fs *FileStore) Append(ctx context.Context, id string, offset int, messages []provider.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -73,11 +81,14 @@ func (fs *FileStore) Append(ctx context.Context, id string, offset int, messages
 		if err != nil {
 			return fmt.Errorf("session: marshal msg %d: %w", i, err)
 		}
-		if _, err := w.Write(line); err != nil {
-			return fmt.Errorf("session: write msg %d: %w", i, err)
-		}
+		// Write the leading newline FIRST so a partial write at
+		// the end of this loop iteration is followed by the next
+		// attempt's leading "\n", which separates the two on read.
 		if err := w.WriteByte('\n'); err != nil {
 			return fmt.Errorf("session: write newline msg %d: %w", i, err)
+		}
+		if _, err := w.Write(line); err != nil {
+			return fmt.Errorf("session: write msg %d: %w", i, err)
 		}
 	}
 	if err := w.Flush(); err != nil {
