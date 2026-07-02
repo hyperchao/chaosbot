@@ -295,7 +295,8 @@ func (a *reActAgent) saveOnSuccess(ctx context.Context, history []provider.Messa
 	if len(history) <= a.sessionOffset {
 		return
 	}
-	if err := a.Store.Append(ctx, a.sessionID, history[a.sessionOffset:]); err != nil {
+	offset := a.trimmedTotal + a.sessionOffset
+	if err := a.Store.Append(ctx, a.sessionID, offset, history[a.sessionOffset:]); err != nil {
 		// Failure here means we have new messages in memory that
 		// did NOT make it to disk. Without this log, the user
 		// would silently lose them on next Resume (issue 001).

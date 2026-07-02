@@ -4,9 +4,8 @@
 
 ## 001 — Session save 失败导致重复 message
 
-**Status**: open
+**Status**: ✅ resolved in Phase 10 (2026-07-02)
 **Found**: 06-3 implementation (2026-06-16)
-**Severity**: low (MVP 可接受)
 **Affects**: `internal/session/filestore.go`, `internal/agent/agent.go`
 
 ### 问题
@@ -26,49 +25,52 @@ sync 之前 crash 或 sync 失败：
 - 结果：磁盘文件出现 `... m4 (partial) m4 (完整) m5 ...`
 - Load 时 partial m4 unmarshal 失败被跳过，但完整 m4 重复
 
-### 现状（缓解）
+### 解决方案: line_id 去重（D6）
 
-- Partial 行在 Load 时被天然 skip（NDJSON 格式，损坏行 unmarshal 失败
-  返回 partial + error）
-- 用户 / 自动化接受偶发重复
-- 重复 message 极罕见（需要 Append 期间 disk full / power loss）
+每个 message 写入时带上 `line_id`（JSON 字段 `"l"`），Load 时去重：
 
-### 候选方案
+**机制**:
+1. 格式: 每条行是 `{"role": "user", "content": "...", "l": <line_id>}`
+   - 使用 `storedLine` 结构体（`provider.Message` embedded + `LineID int \`json:"l"\``）
+2. `FileStore.Append` 为每条 message 赋予连续 line_id（从 caller 传入的
+   `offset` 开始）, 单次 fsync
+3. `loadFromOffset` 用 line_id 做 cursor（`LineID < offset` 跳过）
+4. 重复 line_id 去重（`seen[LineID]` map, 后者为准）
+5. JSON 解析失败的行（partial write）静默跳过
+6. 污 cursor 检测: `maxLineID+1 < offset` → `ErrStaleCursor`
 
-1. **D1: 接受 limitation, 文档说明**
-   - 复杂度: 0
-   - 用户影响: 偶发看到重复 user msg, LLM 能处理
-   - MVP 推荐
+**具体改动** (`internal/session/store.go`, `filestore.go`, `agent/agent.go`):
 
-2. **D2: saveOnSuccess 返回 error, Run 传播**
-   - 复杂度: 低（已经写到一半的代码）
-   - 用户影响: save 失败时 Run 返回 error, 用户知道
-   - 仍然不解决重复, 只让用户知情
+- `Store.Append` 签名从 `(ctx, id, msgs) error` 改为
+  `(ctx, id, offset, msgs) error` — offset 显式传入
+- Agent 的 `saveOnSuccess` 计算 `offset = trimmedTotal + sessionOffset`
+- 所有 Append 实现、NoopStore、test fake 更新签名
 
-3. **D3: 单 message atomic write + 每条 fsync**
-   - 单条 message 用一次 `f.Write(data)` + `f.Sync()`
-   - POSIX PIPE_BUF (4KB) 内 atomic
-   - 工具输出可能 > 4KB, 仍然可能 partial
-   - 复杂度: 中
+**优点**:
+- 部分写入: JSON 解析失败 → skip（天然恢复）
+- 重复: 相同 line_id → 后者覆盖前者
+- 性能: N writes + 1 fsync（无 stat recovery, 无 per-message fsync）
+- cursor: line_id == 绝对位置, Resume 语义不变
 
-4. **D4: WAL 格式 (TLV framing)**
-   - `<8-byte length><newline><message>` 包裹每条 message
-   - Load 跳过 incomplete frame
-   - Append 截断到 last complete frame
-   - 完全 atomic per message
-   - 复杂度: 高
-   - 改变文件格式, 不向后兼容
+### 实现笔记
 
-5. **D5: tmp+rename per Append (方案 A)**
-   - 每次 Append 写 tmp, fsync, rename
-   - 完全 atomic, 但 O(n) per Append
-   - 复杂度: 中
-   - 性能差
+- `storedLine` embedding `provider.Message` + `json:"l"` 保证扁平 JSON
+- 向后兼容: unmarshal 旧格式得到 LineID == 0, 正常加载
+- `commitTrim`/`pruneHistory` 不变, 仍用 `committedPrefix`/`trimmedTotal`
+- `info.Cursor` 语义不变: 绝对 line_id（与之前的绝对值 cursor 同一值）
+- 单次 Append 失败时 caller 不推进 offset, 重试得到相同 line_id,
+  读到端产生重复 frame → Load 时去重
 
-### 当前建议
+### 候选方案（未采用）
 
-实现 D2 (让用户知情) + D1 (文档说 limitation), MVP ship。其他方案
-按需引入。
+1. **D1: 接受 limitation, 文档说明** 不采用 — line_id 去重复杂度
+   足够低
+2. **D2: saveOnSuccess 返回 error, Run 传播** 部分采用 — Append
+   返回 error 的逻辑保留（先写实现 154afe7, 后合并到 D6）
+3. **D3: 单 message atomic write + 每条 fsync** — 性能差，不采用
+4. **D4: WAL 格式 (TLV framing)** — 复杂度高，未采用
+5. **D5: tmp+rename per Append** — 性能差，未采用
+6. **D6: line_id 去重** ✅ 采用
 
 ### 触发决策的事件
 

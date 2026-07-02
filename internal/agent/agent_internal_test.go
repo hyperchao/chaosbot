@@ -530,7 +530,7 @@ func TestResume_ClearsSummaryFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	id := "session-with-summary"
-	fs.Append(context.Background(), id, []provider.Message{NewUserMessage("old")})
+	fs.Append(context.Background(), id, 0, []provider.Message{NewUserMessage("old")})
 	a := &reActAgent{
 		Provider:   providerfake.New("test"),
 		Registry:   NewRegistry(),
@@ -631,7 +631,7 @@ func TestResume_LazyLoadFromCursor(t *testing.T) {
 	for i := range msgs {
 		msgs[i] = NewUserMessage(fmt.Sprintf("m%d", i))
 	}
-	if err := fs.Append(ctx, "lazy", msgs); err != nil {
+	if err := fs.Append(ctx, "lazy", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := fs.SaveSummary(ctx, "lazy", session.SummaryInfo{
@@ -682,7 +682,7 @@ func TestResume_StaleCursor_FallsBackToFull(t *testing.T) {
 		NewAssistantMessage("b", nil),
 		NewUserMessage("c"),
 	}
-	if err := fs.Append(ctx, "stale", msgs); err != nil {
+	if err := fs.Append(ctx, "stale", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	// Cursor far beyond the file end → ErrStaleCursor from
@@ -726,7 +726,7 @@ func TestResume_NoSummary_LoadsFull(t *testing.T) {
 		NewUserMessage("a"),
 		NewAssistantMessage("b", nil),
 	}
-	if err := fs.Append(ctx, "nosum", msgs); err != nil {
+	if err := fs.Append(ctx, "nosum", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	a := newTestAgentWithStore(t, fs, Config{MaxSteps: 1}, []providerfake.Call{
@@ -761,7 +761,7 @@ func TestPruneHistoryCursorIsCumulative(t *testing.T) {
 		{Role: provider.RoleUser, Content: strings.Repeat("a", 200)},
 		{Role: provider.RoleAssistant, Content: strings.Repeat("b", 200)},
 	}
-	if err := fs.Append(ctx, "pre", base); err != nil {
+	if err := fs.Append(ctx, "pre", 0, base); err != nil {
 		t.Fatalf("Append base: %v", err)
 	}
 	// 4 calls: Run1 → SUM-A, ok-1; Run2 → SUM-B, ok-2.

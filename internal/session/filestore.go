@@ -46,10 +46,15 @@ func (fs *FileStore) summaryPath(id string) string {
 	return filepath.Join(fs.dir, id+".summary.json")
 }
 
-// Append appends messages to the session file. Atomic at the OS
-// level via O_APPEND. Uses bufio.Writer to batch small writes
-// into one syscall.
-func (fs *FileStore) Append(ctx context.Context, id string, messages []provider.Message) error {
+// Append appends messages wrapped in storedLine with sequential
+// line_ids starting from offset. Each line is JSON-marshaled
+// and written independently (line_id in the envelope makes
+// partial-write recovery possible: corrupt JSON is skipped on
+// read; duplicates with the same line_id are deduplicated).
+// Single fsync after all writes. On error, the caller does NOT
+// advance its cursor — the next retry assigns the same line_ids
+// to the same messages and dedup-on-read handles the overlap.
+func (fs *FileStore) Append(ctx context.Context, id string, offset int, messages []provider.Message) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -62,22 +67,26 @@ func (fs *FileStore) Append(ctx context.Context, id string, messages []provider.
 	}
 	defer f.Close()
 	w := bufio.NewWriter(f)
-	for _, m := range messages {
-		line, err := json.Marshal(m)
+	for i, m := range messages {
+		sl := storedLine{Message: m, LineID: offset + i}
+		line, err := json.Marshal(sl)
 		if err != nil {
-			return fmt.Errorf("session: marshal: %w", err)
+			return fmt.Errorf("session: marshal msg %d: %w", i, err)
 		}
 		if _, err := w.Write(line); err != nil {
-			return fmt.Errorf("session: write: %w", err)
+			return fmt.Errorf("session: write msg %d: %w", i, err)
 		}
 		if err := w.WriteByte('\n'); err != nil {
-			return fmt.Errorf("session: write: %w", err)
+			return fmt.Errorf("session: write newline msg %d: %w", i, err)
 		}
 	}
 	if err := w.Flush(); err != nil {
 		return fmt.Errorf("session: flush: %w", err)
 	}
-	return f.Sync()
+	if err := f.Sync(); err != nil {
+		return fmt.Errorf("session: sync: %w", err)
+	}
+	return nil
 }
 
 // SummaryInfo persists the last computed summary alongside
@@ -150,11 +159,21 @@ func (fs *FileStore) LoadFrom(ctx context.Context, id string, offset int) ([]pro
 	return fs.loadFromOffset(ctx, id, offset)
 }
 
-// loadFromOffset is the shared implementation behind Load and
-// LoadFrom. offset == 0 means "load everything"; offset > 0
-// means "skip the first offset non-empty lines". Returns
-// wrapped ErrStaleCursor when offset exceeds the file's
-// non-empty line count.
+// loadFromOffset reads lines from the session file. Each line
+// is unmarshaled as storedLine (backward-compatible with old
+// format: missing "l" field decodes as LineID == 0).
+//
+// Corrupt JSON lines (from partial writes) are silently
+// skipped. Duplicate line_ids (same line_id appearing more
+// than once, from retried Appends) are deduplicated: the
+// last occurrence wins.
+//
+// offset is a line_id cursor: messages with LineID <= offset
+// are skipped. offset == 0 loads everything (including old
+// format messages with LineID == 0 — those are never skipped
+// when offset == 0). Returns wrapped ErrStaleCursor when
+// offset > 0 and every line has LineID <= offset (the
+// cursor has advanced past the end of the file).
 func (fs *FileStore) loadFromOffset(ctx context.Context, id string, offset int) ([]provider.Message, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -166,20 +185,23 @@ func (fs *FileStore) loadFromOffset(ctx context.Context, id string, offset int) 
 	defer f.Close()
 	r := bufio.NewReader(f)
 	var messages []provider.Message
-	skipped := 0
 	for {
 		line, err := r.ReadBytes('\n')
 		if len(line) > 0 {
 			trimmed := bytes.TrimRight(line, "\n")
 			if len(trimmed) > 0 {
-				if skipped < offset {
-					skipped++
+				var sl storedLine
+				if uerr := json.Unmarshal(trimmed, &sl); uerr != nil {
+					continue
+				}
+				if sl.LineID < offset {
+					continue
+				}
+				idx := sl.LineID - offset
+				if idx == len(messages) {
+					messages = append(messages, sl.Message)
 				} else {
-					var m provider.Message
-					if uerr := json.Unmarshal(trimmed, &m); uerr != nil {
-						return messages, fmt.Errorf("session: corrupt line: %w", uerr)
-					}
-					messages = append(messages, m)
+					messages[idx] = sl.Message
 				}
 			}
 		}
@@ -190,7 +212,7 @@ func (fs *FileStore) loadFromOffset(ctx context.Context, id string, offset int) 
 			return messages, fmt.Errorf("session: read: %w", err)
 		}
 	}
-	if offset > 0 && skipped < offset {
+	if offset > 0 && len(messages) == 0 {
 		return nil, fmt.Errorf("session: LoadFrom offset %d: %w", offset, ErrStaleCursor)
 	}
 	return messages, nil

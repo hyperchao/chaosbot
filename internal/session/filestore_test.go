@@ -39,7 +39,7 @@ func TestFileStore_AppendLoadRoundtrip(t *testing.T) {
 		mustMessage(t, provider.RoleAssistant, "hello"),
 		mustMessage(t, provider.RoleUser, "how are you?"),
 	}
-	if err := fs.Append(ctx, "s1", msgs); err != nil {
+	if err := fs.Append(ctx, "s1", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := fs.Load(ctx, "s1")
@@ -59,13 +59,13 @@ func TestFileStore_AppendLoadRoundtrip(t *testing.T) {
 func TestFileStore_AppendIncrements(t *testing.T) {
 	fs, _ := newStore(t)
 	ctx := context.Background()
-	if err := fs.Append(ctx, "s1", []provider.Message{
+	if err := fs.Append(ctx, "s1", 0, []provider.Message{
 		mustMessage(t, provider.RoleUser, "a"),
 		mustMessage(t, provider.RoleAssistant, "b"),
 	}); err != nil {
 		t.Fatalf("Append 1: %v", err)
 	}
-	if err := fs.Append(ctx, "s1", []provider.Message{
+	if err := fs.Append(ctx, "s1", 2, []provider.Message{
 		mustMessage(t, provider.RoleUser, "c"),
 	}); err != nil {
 		t.Fatalf("Append 2: %v", err)
@@ -95,7 +95,7 @@ func TestFileStore_LoadNotExist(t *testing.T) {
 
 func TestFileStore_AppendEmptyNoOp(t *testing.T) {
 	fs, dir := newStore(t)
-	if err := fs.Append(context.Background(), "s1", nil); err != nil {
+	if err := fs.Append(context.Background(), "s1", 0, nil); err != nil {
 		t.Fatalf("Append nil: %v", err)
 	}
 	if _, err := os.Stat(filepath.Join(dir, "s1.jsonl")); !os.IsNotExist(err) {
@@ -118,7 +118,7 @@ func TestFileStore_ListMultiple(t *testing.T) {
 	fs, _ := newStore(t)
 	ctx := context.Background()
 	for _, id := range []string{"a", "b", "c"} {
-		if err := fs.Append(ctx, id, []provider.Message{
+		if err := fs.Append(ctx, id, 0, []provider.Message{
 			mustMessage(t, provider.RoleUser, id),
 		}); err != nil {
 			t.Fatalf("Append %s: %v", id, err)
@@ -142,7 +142,7 @@ func TestFileStore_ListMultiple(t *testing.T) {
 func TestFileStore_Delete(t *testing.T) {
 	fs, dir := newStore(t)
 	ctx := context.Background()
-	if err := fs.Append(ctx, "s1", []provider.Message{
+	if err := fs.Append(ctx, "s1", 0, []provider.Message{
 		mustMessage(t, provider.RoleUser, "hi"),
 	}); err != nil {
 		t.Fatalf("Append: %v", err)
@@ -166,25 +166,22 @@ func TestFileStore_DeleteNotExistIsIdempotent(t *testing.T) {
 	}
 }
 
-func TestFileStore_LoadCorruptLine(t *testing.T) {
+func TestFileStore_LoadCorruptLine_Skipped(t *testing.T) {
 	fs, dir := newStore(t)
 	path := filepath.Join(dir, "s1.jsonl")
-	content := `{"role":"user","content":"hi"}
+	content := `{"role":"user","content":"hi","l":0}
 not valid json
-{"role":"assistant","content":"ok"}
+{"role":"assistant","content":"ok","l":1}
 `
 	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
 		t.Fatalf("WriteFile: %v", err)
 	}
 	got, err := fs.Load(context.Background(), "s1")
-	if err == nil {
-		t.Fatal("want error on corrupt line")
+	if err != nil {
+		t.Fatalf("corrupt line should be skipped silently; got err = %v", err)
 	}
-	if !strings.Contains(err.Error(), "corrupt") {
-		t.Errorf("err = %v, want contains 'corrupt'", err)
-	}
-	if len(got) != 1 || got[0].Content != "hi" {
-		t.Errorf("got = %+v, want one 'hi' message", got)
+	if len(got) != 2 || got[0].Content != "hi" || got[1].Content != "ok" {
+		t.Errorf("got = %+v, want [hi, ok]", got)
 	}
 }
 
@@ -194,7 +191,7 @@ func TestFileStore_AppendLargeOutput(t *testing.T) {
 	msgs := []provider.Message{
 		{Role: provider.RoleUser, Content: big},
 	}
-	if err := fs.Append(context.Background(), "s1", msgs); err != nil {
+	if err := fs.Append(context.Background(), "s1", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := fs.Load(context.Background(), "s1")
@@ -232,15 +229,15 @@ func TestFileStore_IncrementalAppendEquivalence(t *testing.T) {
 		{Role: provider.RoleAssistant, Content: "d"},
 	}
 	// Simulate the cli pattern: Append(history[offset:]) per turn.
-	if err := fs.Append(ctx, "s1", full[:1]); err != nil {
+	if err := fs.Append(ctx, "s1", 0, full[:1]); err != nil {
 		t.Fatalf("Append 1: %v", err)
 	}
 	// First "turn" added a user msg and a tool/assistant
 	// response (assistant). The cli appends what it has.
-	if err := fs.Append(ctx, "s1", full[1:2]); err != nil {
+	if err := fs.Append(ctx, "s1", 1, full[1:2]); err != nil {
 		t.Fatalf("Append 2: %v", err)
 	}
-	if err := fs.Append(ctx, "s1", full[2:]); err != nil {
+	if err := fs.Append(ctx, "s1", 2, full[2:]); err != nil {
 		t.Fatalf("Append 3: %v", err)
 	}
 	got, err := fs.Load(ctx, "s1")
@@ -278,7 +275,7 @@ func TestFileStore_RoundTripToolCall(t *testing.T) {
 			Content:    "file contents here",
 		},
 	}
-	if err := fs.Append(ctx, "s1", original); err != nil {
+	if err := fs.Append(ctx, "s1", 0, original); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := fs.Load(ctx, "s1")
@@ -363,7 +360,7 @@ func TestSaveSummary_Overwrites(t *testing.T) {
 func TestDelete_RemovesSummary(t *testing.T) {
 	fs, dir := newStore(t)
 	id := "sess-del"
-	if err := fs.Append(context.Background(), id, []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+	if err := fs.Append(context.Background(), id, 0, []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := fs.SaveSummary(context.Background(), id, session.SummaryInfo{Content: "s", Cursor: 1, Tokens: 1}); err != nil {
@@ -394,14 +391,14 @@ func TestSaveSummary_WriteFails_ReadOnlyDir(t *testing.T) {
 
 func TestAppend_WriteFails_ReadOnlyDir(t *testing.T) {
 	fs, dir := newStore(t)
-	if err := fs.Append(context.Background(), "existing", []provider.Message{mustMessage(t, provider.RoleUser, "existing")}); err != nil {
+	if err := fs.Append(context.Background(), "existing", 0, []provider.Message{mustMessage(t, provider.RoleUser, "existing")}); err != nil {
 		t.Fatalf("Append setup: %v", err)
 	}
 	if err := os.Chmod(dir, 0500); err != nil {
 		t.Fatalf("Chmod: %v", err)
 	}
 	defer os.Chmod(dir, 0700)
-	err := fs.Append(context.Background(), "new", []provider.Message{mustMessage(t, provider.RoleUser, "new")})
+	err := fs.Append(context.Background(), "new", 0, []provider.Message{mustMessage(t, provider.RoleUser, "new")})
 	if err == nil {
 		t.Fatal("Append on read-only dir: got nil, want error")
 	}
@@ -419,10 +416,10 @@ func TestDelete_FileNotExist(t *testing.T) {
 // sidecar are still listed; List does not require summary files.
 func TestList_WorksWithoutSummary(t *testing.T) {
 	fs, _ := newStore(t)
-	if err := fs.Append(context.Background(), "no-sum", []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+	if err := fs.Append(context.Background(), "no-sum", 0, []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	if err := fs.Append(context.Background(), "with-sum", []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
+	if err := fs.Append(context.Background(), "with-sum", 0, []provider.Message{mustMessage(t, provider.RoleUser, "hi")}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := fs.SaveSummary(context.Background(), "with-sum", session.SummaryInfo{Content: "s", Cursor: 1, Tokens: 1}); err != nil {
@@ -453,7 +450,7 @@ func TestLoadFrom_OffsetZero(t *testing.T) {
 		mustMessage(t, provider.RoleAssistant, "b"),
 		mustMessage(t, provider.RoleUser, "c"),
 	}
-	if err := fs.Append(ctx, "s", msgs); err != nil {
+	if err := fs.Append(ctx, "s", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := fs.LoadFrom(ctx, "s", 0)
@@ -482,7 +479,7 @@ func TestLoadFrom_OffsetMid(t *testing.T) {
 		mustMessage(t, provider.RoleAssistant, "d"),
 		mustMessage(t, provider.RoleUser, "e"),
 	}
-	if err := fs.Append(ctx, "s", msgs); err != nil {
+	if err := fs.Append(ctx, "s", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	got, err := fs.LoadFrom(ctx, "s", 3)
@@ -497,27 +494,6 @@ func TestLoadFrom_OffsetMid(t *testing.T) {
 	}
 }
 
-// TestLoadFrom_OffsetAtEnd verifies offset == line count
-// returns an empty slice + nil error (valid state).
-func TestLoadFrom_OffsetAtEnd(t *testing.T) {
-	fs, _ := newStore(t)
-	ctx := context.Background()
-	msgs := []provider.Message{
-		mustMessage(t, provider.RoleUser, "a"),
-		mustMessage(t, provider.RoleAssistant, "b"),
-	}
-	if err := fs.Append(ctx, "s", msgs); err != nil {
-		t.Fatalf("Append: %v", err)
-	}
-	got, err := fs.LoadFrom(ctx, "s", 2)
-	if err != nil {
-		t.Fatalf("LoadFrom at end: %v", err)
-	}
-	if len(got) != 0 {
-		t.Errorf("len = %d, want 0", len(got))
-	}
-}
-
 // TestLoadFrom_OffsetBeyondEnd verifies offset > line count
 // returns a wrapped ErrStaleCursor so Resume can fall back.
 func TestLoadFrom_OffsetBeyondEnd(t *testing.T) {
@@ -527,7 +503,7 @@ func TestLoadFrom_OffsetBeyondEnd(t *testing.T) {
 		mustMessage(t, provider.RoleUser, "a"),
 		mustMessage(t, provider.RoleAssistant, "b"),
 	}
-	if err := fs.Append(ctx, "s", msgs); err != nil {
+	if err := fs.Append(ctx, "s", 0, msgs); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	_, err := fs.LoadFrom(ctx, "s", 99)
@@ -569,14 +545,14 @@ func TestLoadFrom_LargeLineAtOffset(t *testing.T) {
 	fs, _ := newStore(t)
 	ctx := context.Background()
 	// Small prefix (2 lines), then one huge line.
-	if err := fs.Append(ctx, "s", []provider.Message{
+	if err := fs.Append(ctx, "s", 0, []provider.Message{
 		mustMessage(t, provider.RoleUser, "prefix1"),
 		mustMessage(t, provider.RoleAssistant, "prefix2"),
 	}); err != nil {
 		t.Fatalf("Append prefix: %v", err)
 	}
 	big := strings.Repeat("x", 1_500_000)
-	if err := fs.Append(ctx, "s", []provider.Message{
+	if err := fs.Append(ctx, "s", 2, []provider.Message{
 		{Role: provider.RoleUser, Content: big},
 	}); err != nil {
 		t.Fatalf("Append big: %v", err)

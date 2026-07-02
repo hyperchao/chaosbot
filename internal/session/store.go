@@ -12,6 +12,14 @@ import (
 	"chaosbot/internal/provider"
 )
 
+// storedLine is the on-disk representation of one message.
+// Embeds provider.Message so line_id is an additional JSON
+// field in each line.
+type storedLine struct {
+	provider.Message
+	LineID int `json:"l"`
+}
+
 // ErrStaleCursor is returned by LoadFrom when the requested
 // offset exceeds the number of messages in the session file.
 // Callers (typically Resume) should treat the persisted cursor
@@ -22,9 +30,12 @@ var ErrStaleCursor = errors.New("session: cursor beyond end of history")
 // safe for sequential use (the agent loop is single-threaded).
 type Store interface {
 	// Append appends new messages to the session file.
-	// The caller is responsible for passing only new messages
-	// (not the full history). The store simply appends them.
-	Append(ctx context.Context, id string, messages []provider.Message) error
+	// offset is the line_id of the first message; messages are
+	// stored with sequential line_ids starting from there. On
+	// error, the caller should NOT advance its cursor so the
+	// next retry assigns the same line_ids (duplicates are
+	// deduplicated on read).
+	Append(ctx context.Context, id string, offset int, messages []provider.Message) error
 
 	// Load returns the full history for the given ID.
 	// Returns os.ErrNotExist if the session doesn't exist.
@@ -63,7 +74,7 @@ type Store interface {
 // Resume cleanly reports a missing session.
 type NoopStore struct{}
 
-func (NoopStore) Append(_ context.Context, _ string, _ []provider.Message) error {
+func (NoopStore) Append(_ context.Context, _ string, _ int, _ []provider.Message) error {
 	return nil
 }
 

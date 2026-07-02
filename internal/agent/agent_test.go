@@ -377,7 +377,7 @@ func TestAgent_Resume_LoadsAndContinues(t *testing.T) {
 		{Role: provider.RoleUser, Content: "earlier"},
 		{Role: provider.RoleAssistant, Content: "earlier-reply"},
 	}
-	if err := fs.Append(ctx, "sess-001", prev); err != nil {
+	if err := fs.Append(ctx, "sess-001", 0, prev); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{MaxSteps: 1}, fs)
@@ -490,7 +490,7 @@ func TestResume_RestoresSummary(t *testing.T) {
 		{Role: provider.RoleUser, Content: "third"},
 		{Role: provider.RoleAssistant, Content: "third-reply"},
 	}
-	if err := fs.Append(ctx, "sess-sum", hist); err != nil {
+	if err := fs.Append(ctx, "sess-sum", 0, hist); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := fs.SaveSummary(ctx, "sess-sum", session.SummaryInfo{
@@ -540,7 +540,7 @@ func TestResume_StaleSummary_Discarded(t *testing.T) {
 		{Role: provider.RoleUser, Content: "only"},
 		{Role: provider.RoleAssistant, Content: "reply"},
 	}
-	if err := fs.Append(ctx, "stale", hist); err != nil {
+	if err := fs.Append(ctx, "stale", 0, hist); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	// Cursor=10 > len(history)=2: stale.
@@ -576,7 +576,7 @@ func TestResume_NoSummary_StillWorks(t *testing.T) {
 	}
 	fs, _ := session.NewFileStore(t.TempDir())
 	ctx := context.Background()
-	if err := fs.Append(ctx, "plain", []provider.Message{
+	if err := fs.Append(ctx, "plain", 0, []provider.Message{
 		{Role: provider.RoleUser, Content: "hi"},
 		{Role: provider.RoleAssistant, Content: "reply"},
 	}); err != nil {
@@ -616,7 +616,7 @@ func TestSaveOnSuccess_PersistsSummary(t *testing.T) {
 		{Role: provider.RoleUser, Content: strings.Repeat("a", 200)},
 		{Role: provider.RoleAssistant, Content: strings.Repeat("b", 200)},
 	}
-	if err := fs.Append(ctx, "pre", base); err != nil {
+	if err := fs.Append(ctx, "pre", 0, base); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	a := buildAgentWithStore(t, fp, agent.NewRegistry(), agent.Config{
@@ -655,7 +655,7 @@ func TestReset_ClearsSummaryCursor(t *testing.T) {
 		{Role: provider.RoleUser, Content: "old"},
 		{Role: provider.RoleAssistant, Content: "old-reply"},
 	}
-	if err := fs.Append(ctx, "s", hist); err != nil {
+	if err := fs.Append(ctx, "s", 0, hist); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
 	if err := fs.SaveSummary(ctx, "s", session.SummaryInfo{Content: "SUM", Cursor: 1, Tokens: 1}); err != nil {
@@ -750,7 +750,7 @@ func fsLoadSummaryCursor(t *testing.T, fs session.Store, id string) int {
 
 type failAppendStore struct{ session.NoopStore }
 
-func (failAppendStore) Append(context.Context, string, []provider.Message) error {
+func (failAppendStore) Append(context.Context, string, int, []provider.Message) error {
 	return errors.New("append failed")
 }
 
@@ -768,7 +768,7 @@ func TestSaveOnSuccess_AppendFails_AgentStillSucceeds(t *testing.T) {
 
 type failSaveSummaryStore struct{ session.NoopStore }
 
-func (failSaveSummaryStore) Append(_ context.Context, _ string, _ []provider.Message) error {
+func (failSaveSummaryStore) Append(context.Context, string, int, []provider.Message) error {
 	return nil
 }
 
