@@ -360,18 +360,7 @@ func maskKey(s string) string {
 	return s[:4] + "..." + s[len(s)-4:]
 }
 
-// stripThink removes reasoning content wrapped in <think>...</think>
-// tags from model output. Reasoning models (DeepSeek-R1, QwQ, etc.)
-// emit chain-of-thought in these tags; the user only needs the final
-// answer after the closing tag.
-func stripThink(s string) string {
-	before, after, ok := strings.Cut(s, "<think>")
-	if !ok {
-		return s
-	}
-	_, after, ok = strings.Cut(after, "</think>")
-	if !ok {
-		return s
-	}
-	return strings.TrimSpace(before + after)
-}
+// stripThink removes reasoning content from model output. Defined
+// in the agent package as agent.StripThink; this alias keeps the
+// existing call sites in the CLI readable.
+func stripThink(s string) string { return agent.StripThink(s) }

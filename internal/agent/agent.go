@@ -489,7 +489,7 @@ func (a *reActAgent) summarizeHistory(ctx context.Context, history []provider.Me
 	if err != nil {
 		return provider.Message{}, fmt.Errorf("agent: summarize: %w", err)
 	}
-	return provider.Message{Role: provider.RoleUser, Content: resp.Content}, nil
+	return provider.Message{Role: provider.RoleUser, Content: StripThink(resp.Content)}, nil
 }
 
 // contextBudget returns the effective input-side token

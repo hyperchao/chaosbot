@@ -510,6 +510,49 @@ func TestSummarizeHistory_ProviderError(t *testing.T) {
 	}
 }
 
+// TestSummarizeHistory_StripsThinkTags verifies that reasoning
+// model output wrapped in <think>...</think> is stripped from
+// the summary content. Otherwise the chain-of-thought pollutes
+// the persisted summary and inflates the token budget on every
+// subsequent turn that re-injects it as prior context.
+func TestSummarizeHistory_StripsThinkTags(t *testing.T) {
+	a, fp := newTestAgent(t, nil)
+	fp.NextResp = &provider.Response{
+		Content: "<think>\nlet me think about what to summarize\n</think>\nSUMMARY: user asked about X, got Y",
+	}
+	hist := []provider.Message{NewUserMessage("turn 1"), NewAssistantMessage("reply 1", nil)}
+	msg, err := a.summarizeHistory(context.Background(), hist)
+	if err != nil {
+		t.Fatalf("summarizeHistory: %v", err)
+	}
+	want := "SUMMARY: user asked about X, got Y"
+	if msg.Content != want {
+		t.Errorf("msg.Content = %q, want %q", msg.Content, want)
+	}
+}
+
+// TestStripThink exercises the standalone helper. Both the
+// summarizeHistory test above and the CLI display path use this
+// function; pinning its behavior here keeps the contract tight.
+func TestStripThink(t *testing.T) {
+	tests := []struct {
+		in, want string
+	}{
+		{"plain text", "plain text"},
+		{"<think>reasoning</think>answer", "answer"},
+		{"pre<think>reasoning</think>post", "prepost"},
+		{"<think>only opening, no closing", "<think>only opening, no closing"},
+		{"no opening tag, has closing", "no opening tag, has closing"},
+		{"", ""},
+		{"<think>multi\nline\nreasoning</think>final", "final"},
+	}
+	for _, tt := range tests {
+		if got := StripThink(tt.in); got != tt.want {
+			t.Errorf("StripThink(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
 func TestReset_ClearsSummaryFields(t *testing.T) {
 	a, _ := newTestAgent(t, nil)
 	a.History = []provider.Message{NewUserMessage("old")}
