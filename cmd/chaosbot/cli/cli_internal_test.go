@@ -4,11 +4,11 @@ import "testing"
 
 func TestReplComplete_SlashPrefix(t *testing.T) {
 	c := replComplete("/")
-	if len(c) != 5 {
-		t.Fatalf("got %d completions, want 5 (%q)", len(c), c)
+	if len(c) != 6 {
+		t.Fatalf("got %d completions, want 6 (%q)", len(c), c)
 	}
 	want := map[string]bool{
-		"/reset": true, "/exit": true, "/quit": true, "/help": true, "/tools": true,
+		"/reset": true, "/sessions": true, "/exit": true, "/quit": true, "/help": true, "/tools": true,
 	}
 	for _, s := range c {
 		if !want[s] {

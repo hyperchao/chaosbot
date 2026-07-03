@@ -17,6 +17,7 @@ import (
 	"chaosbot/internal/agent"
 	"chaosbot/internal/config"
 	"chaosbot/internal/provider"
+	"chaosbot/internal/session"
 )
 
 // fakeAgent is a hand-written test double of agent.Agent.
@@ -53,6 +54,42 @@ func (f *fakeAgent) SessionID() string {
 
 var _ agent.Agent = (*fakeAgent)(nil)
 
+type fakeStore struct {
+	listIDs    []string
+	listErr    error
+	summaryErr error
+}
+
+func (f *fakeStore) List(_ context.Context) ([]string, error) {
+	return f.listIDs, f.listErr
+}
+
+func (f *fakeStore) Load(_ context.Context, _ string) ([]provider.Message, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) LoadFrom(_ context.Context, _ string, _ int) ([]provider.Message, error) {
+	return nil, nil
+}
+
+func (f *fakeStore) Append(_ context.Context, _ string, _ int, _ []provider.Message) error {
+	return nil
+}
+
+func (f *fakeStore) SaveSummary(_ context.Context, _ string, _ session.SummaryInfo) error {
+	return nil
+}
+
+func (f *fakeStore) LoadSummary(_ context.Context, _ string) (session.SummaryInfo, error) {
+	return session.SummaryInfo{}, f.summaryErr
+}
+
+func (f *fakeStore) Delete(_ context.Context, _ string) error {
+	return nil
+}
+
+var _ session.Store = (*fakeStore)(nil)
+
 // buildCLI wires a CLI via the di library. Tests pass fakes
 // (a fakeAgent) and pre-built values; the same pattern main.go
 // uses for production wiring. The `in` reader is registered
@@ -67,6 +104,7 @@ func buildCLI(t *testing.T, fp agent.Agent, cfg *config.Config) (*cli.CLI, *byte
 	di.RegisterDI(c, func() agent.Agent { return fp })
 	di.RegisterDI(c, func() *agent.Registry { return agent.NewRegistry() })
 	di.RegisterDI(c, func() *config.Config { return cfg })
+	di.RegisterDI(c, func() session.Store { return &fakeStore{} })
 	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
 	di.RegisterAliasDI(c, "errout", func() io.Writer { return errOut })
@@ -239,6 +277,7 @@ func buildREPL(t *testing.T, fp agent.Agent, input string) (*cli.CLI, *bytes.Buf
 	di.RegisterDI(c, func() agent.Agent { return fp })
 	di.RegisterDI(c, func() *agent.Registry { return agent.NewRegistry() })
 	di.RegisterDI(c, func() *config.Config { return &config.Config{} })
+	di.RegisterDI(c, func() session.Store { return &fakeStore{} })
 	di.RegisterAliasDI(c, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(c, "out", func() io.Writer { return out })
 	di.RegisterAliasDI(c, "errout", func() io.Writer { return errOut })
@@ -361,6 +400,7 @@ func TestREPL_ToolsListsRegistryNames(t *testing.T) {
 	di.RegisterDI(cn, func() agent.Agent { return &fakeAgent{} })
 	di.RegisterDI(cn, func() *agent.Registry { return r })
 	di.RegisterDI(cn, func() *config.Config { return &config.Config{} })
+	di.RegisterDI(cn, func() session.Store { return &fakeStore{} })
 	di.RegisterAliasDI(cn, "in", func() io.Reader { return in })
 	di.RegisterAliasDI(cn, "out", func() io.Writer { return out })
 	di.RegisterAliasDI(cn, "errout", func() io.Writer { return errOut })

@@ -28,3 +28,4 @@ go.work.sum
 # Local chaosbot config (use chaosbot.example.yaml as a template)
 chaosbot.yaml
 chaosbot.local.yaml
+chaosbot.log

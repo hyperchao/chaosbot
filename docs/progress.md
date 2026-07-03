@@ -60,6 +60,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 11-1  | CLI logging flags — --log-file / --log-level | ✅ | 07-01 | 07-01 | ~85 | n/a | 新文件 `cmd/chaosbot/logging.go`(79)+ `logging_test.go`(135);level-aware handler;flags 注入 `main.go`;仅 status 输出 + JSON/Text handler 选择;commit `51cdaaf` |
 | 11-2  | agent/provider Chat 错误与 envelope 日志 | ✅ | 07-01 | 07-01 | ~25 | 0/0 | 之前被 swallow 的 error 现在 `slog.Debug`;agent.Chat 入口/出口 + provider.Chat 加 req envelope 日志(model、msg/tool count、temperature 等);provider.Chat 加 latency + content length;commit `e326707` |
 | 11-3  | Issue 001 — line_id dedup + single fsync/Append | ✅ | 07-02 | 07-02 | ~80 | +11 | `Store.Append` 加 `offset int` 参数;FileStore JSON 行 `{"l":N,"role":...,...}` + 单次 fsync;`loadFromOffset` 按 `LineID<offset` 跳过 + duplicate 后写覆盖(去重);agent.saveOnSuccess 传 `trimmedTotal+sessionOffset`(Phase 10 基础设施);Issue 001 → ✅ resolved;commit `47d5e27` |
+| 11-4  | `/sessions` 编号列表命令 | ✅ | 07-02 | 07-02 | ~135 | +2 | `CLI.Store` 字段;`sessionsCmd` + `readLine`;编号列表交互;`fakeStore` 测试替身;`TestReplComplete_SlashPrefix` 更新;无新依赖;commit `tbd` |
 
 ## 200-LOC 守门(每轮 review 预算)
 
