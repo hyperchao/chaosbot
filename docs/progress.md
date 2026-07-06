@@ -61,6 +61,7 @@ must update the table below when it starts, finishes, or changes scope.
 | 11-2  | agent/provider Chat 错误与 envelope 日志 | ✅ | 07-01 | 07-01 | ~25 | 0/0 | 之前被 swallow 的 error 现在 `slog.Debug`;agent.Chat 入口/出口 + provider.Chat 加 req envelope 日志(model、msg/tool count、temperature 等);provider.Chat 加 latency + content length;commit `e326707` |
 | 11-3  | Issue 001 — line_id dedup + single fsync/Append | ✅ | 07-02 | 07-02 | ~80 | +11 | `Store.Append` 加 `offset int` 参数;FileStore JSON 行 `{"l":N,"role":...,...}` + 单次 fsync;`loadFromOffset` 按 `LineID<offset` 跳过 + duplicate 后写覆盖(去重);agent.saveOnSuccess 传 `trimmedTotal+sessionOffset`(Phase 10 基础设施);Issue 001 → ✅ resolved;commit `47d5e27` |
 | 11-4  | `/sessions` 编号列表命令 | ✅ | 07-02 | 07-02 | ~135 | +2 | `CLI.Store` 字段;`sessionsCmd` + `readLine`;编号列表交互;`fakeStore` 测试替身;`TestReplComplete_SlashPrefix` 更新;无新依赖;commit `tbd` |
+| 11-5  | glamour markdown 渲染 | ✅ | 07-02 | 07-02 | ~28 | +1 | `glamour` 依赖;`renderMarkdown` 函数;`runCmd` + `replDispatch` 两处输出改用 glamour 渲染;先 stripThink 再 render;binary +~0.5MB;commit `tbd` |
 
 ## 200-LOC 守门(每轮 review 预算)
 

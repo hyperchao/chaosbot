@@ -19,7 +19,8 @@ import (
 	"chaosbot/internal/config"
 	"chaosbot/internal/session"
 
-	"github.com/peterh/liner" // why: pure-Go readline for REPL (history, line-editing, tab-completion); docker/geth also use it
+	"github.com/charmbracelet/glamour" // why: markdown-to-ANSI rendering for CLI reply output
+	"github.com/peterh/liner"          // why: pure-Go readline for REPL (history, line-editing, tab-completion); docker/geth also use it
 	"golang.org/x/term"
 )
 
@@ -94,7 +95,9 @@ func (c *CLI) runCmd(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Fprintln(c.Out, stripThink(reply))
+	if err := renderMarkdown(c.Out, stripThink(reply)); err != nil {
+		fmt.Fprintln(c.ErrOut, "(markdown render error:", err, ")")
+	}
 	return nil
 }
 
@@ -312,7 +315,9 @@ func (c *CLI) replDispatch(line string, io REPLIO) bool {
 		fmt.Fprintln(c.ErrOut, "error:", agent.HumanError(err))
 		return false
 	}
-	fmt.Fprintln(c.Out, stripThink(reply))
+	if err := renderMarkdown(c.Out, stripThink(reply)); err != nil {
+		fmt.Fprintln(c.ErrOut, "(markdown render error:", err, ")")
+	}
 	return false
 }
 
@@ -364,3 +369,20 @@ func maskKey(s string) string {
 // in the agent package as agent.StripThink; this alias keeps the
 // existing call sites in the CLI readable.
 func stripThink(s string) string { return agent.StripThink(s) }
+
+// renderMarkdown renders markdown to ANSI-colored terminal output.
+func renderMarkdown(w io.Writer, s string) error {
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(80),
+	)
+	if err != nil {
+		return fmt.Errorf("glamour renderer: %w", err)
+	}
+	out, err := r.Render(s)
+	if err != nil {
+		return fmt.Errorf("glamour render: %w", err)
+	}
+	_, err = fmt.Fprint(w, out)
+	return err
+}
