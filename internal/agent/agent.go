@@ -430,6 +430,15 @@ func (a *reActAgent) step(ctx context.Context, history []provider.Message, force
 	if err := req.Validate(); err != nil {
 		return nil, "", fmt.Errorf("agent: invalid request: %w", err)
 	}
+	slog.Debug("agent.Chat: request",
+		"model", req.Model,
+		"temperature", req.Temperature,
+		"maxTokens", req.MaxTokens,
+		"toolCount", len(req.Tools),
+		"system", req.System,
+		"messages", req.Messages,
+		"tools", req.Tools,
+	)
 	resp, err := a.Provider.Chat(ctx, req)
 	if err != nil {
 		return nil, "", fmt.Errorf("agent: chat: %w", err)
@@ -485,6 +494,11 @@ func (a *reActAgent) summarizeHistory(ctx context.Context, history []provider.Me
 	if err := req.Validate(); err != nil {
 		return provider.Message{}, fmt.Errorf("agent: summarize request: %w", err)
 	}
+	slog.Debug("agent.summarize: request",
+		"model", req.Model,
+		"system", req.System,
+		"messages", req.Messages,
+	)
 	resp, err := a.Provider.Chat(ctx, req)
 	if err != nil {
 		return provider.Message{}, fmt.Errorf("agent: summarize: %w", err)
